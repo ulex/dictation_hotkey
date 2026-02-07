@@ -105,13 +105,15 @@ class OverlayWidget(QWidget):
     def _position_near_caret(self):
         """Place the overlay just above the caret, falling back to screen center."""
         screen = QApplication.primaryScreen().geometry()
+        dpr = QApplication.primaryScreen().devicePixelRatio()
         pos = _get_caret_pos()
         if pos:
-            x = pos[0] - self.width() // 2
-            y = pos[1] - self.height() - 8
+            # Convert physical pixels (Win32) to logical pixels (Qt)
+            lx = (pos[0] + 10) / dpr
+            ly = (pos[1]) / dpr
             # Clamp to screen bounds
-            x = max(screen.x(), min(x, screen.x() + screen.width() - self.width()))
-            y = max(screen.y(), min(y, screen.y() + screen.height() - self.height()))
+            x = max(screen.x(), min(lx, screen.x() + screen.width() - self.width()))
+            y = max(screen.y(), min(ly, screen.y() + screen.height() - self.height()))
             self.move(x, y)
         else:
             x = screen.x() + (screen.width() - self.width()) // 2
