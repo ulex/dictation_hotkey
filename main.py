@@ -1,7 +1,8 @@
+import signal
 import sys
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, QTimer, Slot
 
 import config
 from audio import AudioCapture
@@ -103,8 +104,13 @@ class App(QObject):
 
 
 def main():
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # Timer lets Python's signal handler run inside Qt's event loop
+    tick = QTimer()
+    tick.start(500)
+    tick.timeout.connect(lambda: None)
     controller = App()
     sys.exit(app.exec())
 
