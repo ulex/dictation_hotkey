@@ -1,6 +1,7 @@
 import ctypes
 import signal
 import sys
+import winsound
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, QTimer, Slot
@@ -71,6 +72,7 @@ class App(QObject):
 
         self._recording = True
         self._chars_typed = 0
+        winsound.PlaySound("Speech On", winsound.SND_ALIAS | winsound.SND_ASYNC)
         self._audio.start()
         self._transcription.start(api_key, self._audio.queue)
         self._tray.set_recording(True)
