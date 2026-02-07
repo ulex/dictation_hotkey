@@ -32,8 +32,8 @@ class App(QObject):
         self._audio = AudioCapture()
         self._transcription = TranscriptionWorker()
         self._overlay = OverlayWidget()
-        self._tray = TrayIcon(hotkey=self._config.get("hotkey", "Win+Y"))
-        self._hotkey = GlobalHotkey(self._config.get("hotkey", "Win+Y"))
+        self._tray = TrayIcon(hotkey=self._config.get("hotkey", "Ctrl+Shift+F23"))
+        self._hotkey = GlobalHotkey(self._config.get("hotkey", "Ctrl+Shift+F23"))
 
         # Escape key polling timer
         self._esc_timer = QTimer(self)
@@ -126,9 +126,9 @@ class App(QObject):
     def _open_settings(self):
         dlg = SettingsDialog(self._config)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
-            old_hotkey = self._config.get("hotkey", "Win+Y")
+            old_hotkey = self._config.get("hotkey", "Ctrl+Shift+F23")
             self._config = dlg.get_config()
-            new_hotkey = self._config.get("hotkey", "Win+Y")
+            new_hotkey = self._config.get("hotkey", "Ctrl+Shift+F23")
             if new_hotkey != old_hotkey:
                 self._hotkey.stop()
                 self._hotkey.update_combo(new_hotkey)

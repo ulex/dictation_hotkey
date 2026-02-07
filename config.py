@@ -6,7 +6,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULTS = {
     "api_key": "",
-    "hotkey": "Win+Y",
+    "hotkey": "Ctrl+Shift+F23",
     "language": "",
 }
 

@@ -2,3 +2,4 @@ PySide6
 mistralai[realtime]
 sounddevice
 numpy
+keyboard
