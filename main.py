@@ -1,4 +1,5 @@
 import ctypes
+import os
 import signal
 import sys
 import winsound
@@ -72,7 +73,8 @@ class App(QObject):
 
         self._recording = True
         self._chars_typed = 0
-        winsound.PlaySound(r"C:\Windows\Media\Speech On.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
+        _windir = os.environ.get("WINDIR", r"C:\Windows")
+        winsound.PlaySound(os.path.join(_windir, "Media", "Speech On.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._audio.start()
         self._transcription.start(api_key, self._audio.queue)
         self._tray.set_recording(True)
