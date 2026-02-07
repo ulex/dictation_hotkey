@@ -126,7 +126,14 @@ class App(QObject):
     def _open_settings(self):
         dlg = SettingsDialog(self._config)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
+            old_hotkey = self._config.get("hotkey", "Win+Y")
             self._config = dlg.get_config()
+            new_hotkey = self._config.get("hotkey", "Win+Y")
+            if new_hotkey != old_hotkey:
+                self._hotkey.stop()
+                self._hotkey.update_combo(new_hotkey)
+                self._hotkey.start()
+                self._tray.update_hotkey(new_hotkey)
 
 
 def main():

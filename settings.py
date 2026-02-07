@@ -22,9 +22,10 @@ class SettingsDialog(QDialog):
         self._api_key_edit.setPlaceholderText("Enter Mistral API key")
         layout.addRow("API Key:", self._api_key_edit)
 
-        # Hotkey display
-        self._hotkey_label = QLabel(self._config.get("hotkey", "Ctrl+Shift+D"))
-        layout.addRow("Hotkey:", self._hotkey_label)
+        # Hotkey
+        self._hotkey_edit = QLineEdit(self._config.get("hotkey", "Win+Y"))
+        self._hotkey_edit.setPlaceholderText("e.g. Win+Y, Ctrl+Shift+D")
+        layout.addRow("Hotkey:", self._hotkey_edit)
 
         # Language (optional)
         self._language_edit = QLineEdit(self._config.get("language", ""))
@@ -41,6 +42,7 @@ class SettingsDialog(QDialog):
 
     def _on_ok(self):
         self._config["api_key"] = self._api_key_edit.text().strip()
+        self._config["hotkey"] = self._hotkey_edit.text().strip() or "Win+Y"
         self._config["language"] = self._language_edit.text().strip()
         config.save(self._config)
         self.accept()

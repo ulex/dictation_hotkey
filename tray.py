@@ -48,6 +48,10 @@ class TrayIcon(QSystemTrayIcon):
             tip += f"\nHotkey: {self._hotkey}"
         self.setToolTip(tip)
 
+    def update_hotkey(self, hotkey: str):
+        self._hotkey = hotkey
+        self._update_tooltip(recording=False)
+
     def set_recording(self, recording: bool):
         if recording:
             self.setIcon(self._recording_icon)
