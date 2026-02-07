@@ -72,7 +72,7 @@ class App(QObject):
 
         self._recording = True
         self._chars_typed = 0
-        winsound.PlaySound("Speech On", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        winsound.PlaySound(r"C:\Windows\Media\Speech On.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._audio.start()
         self._transcription.start(api_key, self._audio.queue)
         self._tray.set_recording(True)
