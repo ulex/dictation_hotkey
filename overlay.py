@@ -1,6 +1,28 @@
+import ctypes
+import ctypes.wintypes
+
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QPainter, QBrush, QFont
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QApplication, QGraphicsOpacityEffect
+
+
+def _get_caret_pos():
+    """Get the screen position of the text caret via Win32 API. Returns (x, y) or None."""
+    user32 = ctypes.windll.user32
+    tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    current_tid = user32.GetCurrentThreadId()
+    user32.AttachThreadInput(current_tid, tid, True)
+    try:
+        hwnd = user32.GetFocus()
+        if not hwnd:
+            return None
+        pt = ctypes.wintypes.POINT()
+        if user32.GetCaretPos(ctypes.byref(pt)):
+            user32.ClientToScreen(hwnd, ctypes.byref(pt))
+            return (pt.x, pt.y)
+    finally:
+        user32.AttachThreadInput(current_tid, tid, False)
+    return None
 
 
 class RecordingDot(QWidget):
@@ -39,7 +61,9 @@ class RecordingDot(QWidget):
 
 
 class OverlayWidget(QWidget):
-    """Small always-on-top translucent status overlay at the top-center of the screen."""
+    """Small always-on-top translucent status overlay positioned near the caret."""
+
+    WINDOW_OPACITY = 0.7
 
     def __init__(self):
         super().__init__()
@@ -50,6 +74,7 @@ class OverlayWidget(QWidget):
             | Qt.WindowType.WindowTransparentForInput
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowOpacity(self.WINDOW_OPACITY)
         self.setFixedSize(220, 44)
 
         layout = QHBoxLayout(self)
@@ -77,10 +102,20 @@ class OverlayWidget(QWidget):
         p.drawRoundedRect(self.rect(), 10, 10)
         p.end()
 
-    def _center_on_screen(self):
+    def _position_near_caret(self):
+        """Place the overlay just above the caret, falling back to screen center."""
         screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - self.width()) // 2
-        self.move(x, 24)
+        pos = _get_caret_pos()
+        if pos:
+            x = pos[0] - self.width() // 2
+            y = pos[1] - self.height() - 8
+            # Clamp to screen bounds
+            x = max(screen.x(), min(x, screen.x() + screen.width() - self.width()))
+            y = max(screen.y(), min(y, screen.y() + screen.height() - self.height()))
+            self.move(x, y)
+        else:
+            x = screen.x() + (screen.width() - self.width()) // 2
+            self.move(x, screen.y() + 24)
 
     def show_status(self, text: str, recording: bool = False, auto_hide_ms: int = 0):
         """Update and show the overlay."""
@@ -90,7 +125,7 @@ class OverlayWidget(QWidget):
             self._dot.start()
         else:
             self._dot.stop()
-        self._center_on_screen()
+        self._position_near_caret()
         self.show()
         if auto_hide_ms > 0:
             self._hide_timer.start(auto_hide_ms)
