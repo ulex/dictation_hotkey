@@ -1,8 +1,11 @@
+import ctypes
 import signal
 import sys
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, QTimer, Slot
+
+VK_ESCAPE = 0x1B
 
 import config
 from audio import AudioCapture
@@ -30,8 +33,14 @@ class App(QObject):
         self._tray = TrayIcon()
         self._hotkey = GlobalHotkey(self._config.get("hotkey", "Win+Y"))
 
+        # Escape key polling timer
+        self._esc_timer = QTimer(self)
+        self._esc_timer.setInterval(50)
+        self._esc_timer.timeout.connect(self._poll_escape)
+
         # Connections
         self._hotkey.triggered.connect(self._on_hotkey)
+        self._overlay.clicked.connect(self._on_overlay_clicked)
         self._transcription.text_delta.connect(self._on_text_delta)
         self._transcription.error.connect(self._on_error)
         self._transcription.finished.connect(self._on_transcription_finished)
@@ -66,8 +75,10 @@ class App(QObject):
         self._transcription.start(api_key, self._audio.queue)
         self._tray.set_recording(True)
         self._overlay.show_status("Recording...", recording=True)
+        self._esc_timer.start()
 
     def _stop_recording(self):
+        self._esc_timer.stop()
         self._recording = False
         self._audio.stop()
         self._transcription.stop()
@@ -82,6 +93,17 @@ class App(QObject):
     def _on_text_delta(self, delta: str):
         self._chars_typed += len(delta)
         type_text(delta)
+
+    @Slot()
+    def _on_overlay_clicked(self):
+        if self._recording:
+            self._stop_recording()
+
+    @Slot()
+    def _poll_escape(self):
+        if ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000:
+            if self._recording:
+                self._stop_recording()
 
     @Slot(str)
     def _on_error(self, msg: str):

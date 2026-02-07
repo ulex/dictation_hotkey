@@ -1,8 +1,8 @@
 import ctypes
 import ctypes.wintypes
 
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QPainter, QBrush, QFont
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Signal
+from PySide6.QtGui import QColor, QPainter, QBrush, QFont, QMouseEvent
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QApplication, QGraphicsOpacityEffect
 
 
@@ -63,6 +63,7 @@ class RecordingDot(QWidget):
 class OverlayWidget(QWidget):
     """Small always-on-top translucent status overlay positioned near the caret."""
 
+    clicked = Signal()
     WINDOW_OPACITY = 0.7
 
     def __init__(self):
@@ -71,7 +72,6 @@ class OverlayWidget(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
-            | Qt.WindowType.WindowTransparentForInput
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowOpacity(self.WINDOW_OPACITY)
@@ -101,6 +101,9 @@ class OverlayWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(self.rect(), 10, 10)
         p.end()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        self.clicked.emit()
 
     def _position_near_caret(self):
         """Place the overlay just above the caret, falling back to screen center."""
