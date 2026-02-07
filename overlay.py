@@ -10,7 +10,7 @@ def _get_caret_pos():
     """Get the screen position of the text caret via Win32 API. Returns (x, y) or None."""
     user32 = ctypes.windll.user32
     tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
-    current_tid = user32.GetCurrentThreadId()
+    current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
     user32.AttachThreadInput(current_tid, tid, True)
     try:
         hwnd = user32.GetFocus()
