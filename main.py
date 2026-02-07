@@ -30,7 +30,7 @@ class App(QObject):
         self._audio = AudioCapture()
         self._transcription = TranscriptionWorker()
         self._overlay = OverlayWidget()
-        self._tray = TrayIcon()
+        self._tray = TrayIcon(hotkey=self._config.get("hotkey", "Win+Y"))
         self._hotkey = GlobalHotkey(self._config.get("hotkey", "Win+Y"))
 
         # Escape key polling timer

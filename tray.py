@@ -20,12 +20,13 @@ class TrayIcon(QSystemTrayIcon):
     settings_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, hotkey: str = "", parent=None):
         super().__init__(parent)
+        self._hotkey = hotkey
         self._idle_icon = _make_icon("#4A90D9")
         self._recording_icon = _make_icon("#DC2626")
         self.setIcon(self._idle_icon)
-        self.setToolTip("Dictation Hotkey — Idle")
+        self._update_tooltip(recording=False)
 
         menu = QMenu()
         settings_action = QAction("Settings...", menu)
@@ -40,10 +41,16 @@ class TrayIcon(QSystemTrayIcon):
 
         self.setContextMenu(menu)
 
+    def _update_tooltip(self, recording: bool):
+        status = "Recording..." if recording else "Idle"
+        tip = f"Dictation Hotkey — {status}"
+        if self._hotkey:
+            tip += f"\nHotkey: {self._hotkey}"
+        self.setToolTip(tip)
+
     def set_recording(self, recording: bool):
         if recording:
             self.setIcon(self._recording_icon)
-            self.setToolTip("Dictation Hotkey — Recording...")
         else:
             self.setIcon(self._idle_icon)
-            self.setToolTip("Dictation Hotkey — Idle")
+        self._update_tooltip(recording)
