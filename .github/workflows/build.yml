@@ -1,0 +1,33 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build exe
+        run: pyinstaller dictation_hotkey.spec
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictationHotkey
+          path: dist/DictationHotkey.exe
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/DictationHotkey.exe
