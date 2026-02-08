@@ -37,27 +37,37 @@ class GlobalHotkey(QObject):
         super().__init__(parent)
         self._combos = combos or []
         self._parsed: list[tuple[frozenset[str], str]] = []
+        self._held: set[str] = set()
         self._hook = None
 
     def start(self):
         """Register the hotkeys via low-level keyboard hook."""
         self._parsed = [_parse_combo(c) for c in self._combos]
+        self._held.clear()
         if self._parsed:
             self._hook = keyboard.hook(self._on_event, suppress=True)
 
     def _on_event(self, event: keyboard.KeyboardEvent):
         """Intercept every key event; suppress and fire on matching combo, pass others through."""
-        if event.event_type != "down" or not event.name:
+        if not event.name:
             return True
         name = event.name.lower()
+        if event.event_type == "up":
+            self._held.discard(name)
+            return True
+        if event.event_type != "down":
+            return True
+        is_repeat = name in self._held
+        self._held.add(name)
         active = None
         for modifiers, key in self._parsed:
             if name == key:
                 if active is None:
                     active = _get_active_modifiers()
                 if active == modifiers:
-                    self.triggered.emit()
-                    return False  # suppress the key
+                    if not is_repeat:
+                        self.triggered.emit()
+                    return False  # suppress the key (initial and repeats)
         return True  # pass through
 
     def stop(self):
