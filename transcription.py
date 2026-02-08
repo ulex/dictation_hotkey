@@ -5,7 +5,6 @@ import threading
 import time
 from typing import AsyncIterator
 
-import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from mistralai import Mistral
@@ -48,13 +47,13 @@ def _run_loop():
 
 async def _audio_stream(audio_queue: queue.Queue, is_running: callable) -> AsyncIterator[bytes]:
     """Async generator yielding audio bytes: warmup silence then real mic data."""
-    num_samples = int(SAMPLE_RATE * WARMUP_DURATION)
-    silence = np.zeros(num_samples, dtype=np.int16)
-    chunk_size = int(SAMPLE_RATE * 0.1)
-    for i in range(0, num_samples, chunk_size):
+    chunk_samples = int(SAMPLE_RATE * 0.1)
+    chunk_bytes = b'\x00' * (chunk_samples * 2)  # 2 bytes per int16 sample
+    num_chunks = int(WARMUP_DURATION / 0.1)
+    for _ in range(num_chunks):
         if not is_running():
             return
-        yield silence[i:i + chunk_size].tobytes()
+        yield chunk_bytes
         await asyncio.sleep(0.05)
 
     while is_running():
