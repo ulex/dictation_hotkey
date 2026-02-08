@@ -79,7 +79,7 @@ class App(QObject):
         self._audio.start()
         self._transcription.start(api_key, self._audio.queue)
         self._tray.set_recording(True)
-        self._overlay.show_status("Recording...", recording=True)
+        self._overlay.show_status("🎙️ Listening...", recording=True)
         self._esc_timer.start()
 
     def _stop_recording(self):

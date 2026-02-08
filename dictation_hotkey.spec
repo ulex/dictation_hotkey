@@ -1,17 +1,9 @@
-import os
-import _sounddevice_data
-
-# Locate PortAudio DLLs bundled with sounddevice
-_pa_dir = os.path.join(os.path.dirname(_sounddevice_data.__file__), "portaudio-binaries")
-_pa_binaries = [(os.path.join(_pa_dir, f), "_sounddevice_data/portaudio-binaries")
-                for f in os.listdir(_pa_dir) if f.endswith(".dll")]
-
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=_pa_binaries,
+    binaries=[],
     datas=[],
-    hiddenimports=["_sounddevice_data"],
+    hiddenimports=["_cffi_backend"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -47,6 +47,11 @@ class SettingsDialog(QDialog):
         self._language_edit.setPlaceholderText("e.g. en (leave blank for auto)")
         layout.addRow("Language:", self._language_edit)
 
+        # Start with Windows
+        self._startup_cb = QCheckBox("Start with Windows")
+        self._startup_cb.setChecked(self._config.get("start_with_windows", False))
+        layout.addRow(self._startup_cb)
+
         # Buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -61,6 +66,10 @@ class SettingsDialog(QDialog):
         self._config["hotkey_win_h"] = self._win_h_cb.isChecked()
         self._config["hotkey_custom"] = self._custom_edit.text().strip()
         self._config["language"] = self._language_edit.text().strip()
+        new_startup = self._startup_cb.isChecked()
+        if new_startup != self._config.get("start_with_windows", False):
+            config.set_startup_shortcut(new_startup)
+        self._config["start_with_windows"] = new_startup
         config.save(self._config)
         self.accept()
 
