@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton,
-    QDialogButtonBox, QLabel,
+    QDialogButtonBox, QLabel, QCheckBox, QGroupBox, QVBoxLayout,
 )
 
 import config
@@ -22,10 +22,25 @@ class SettingsDialog(QDialog):
         self._api_key_edit.setPlaceholderText("Enter Mistral API key")
         layout.addRow("API Key:", self._api_key_edit)
 
-        # Hotkey
-        self._hotkey_edit = QLineEdit(self._config.get("hotkey", "Ctrl+Shift+F23"))
-        self._hotkey_edit.setPlaceholderText("e.g. Ctrl+Shift+F23, Win+Y")
-        layout.addRow("Hotkey:", self._hotkey_edit)
+        # Hotkey group
+        hotkey_group = QGroupBox("Hotkeys")
+        hotkey_layout = QVBoxLayout(hotkey_group)
+
+        self._copilot_cb = QCheckBox("Use Copilot key (Win+C, Win+Shift+F23)")
+        self._copilot_cb.setChecked(self._config.get("hotkey_copilot", False))
+        hotkey_layout.addWidget(self._copilot_cb)
+
+        self._win_h_cb = QCheckBox("Replace Windows dictation (Win+H)")
+        self._win_h_cb.setChecked(self._config.get("hotkey_win_h", True))
+        hotkey_layout.addWidget(self._win_h_cb)
+
+        self._custom_edit = QLineEdit(self._config.get("hotkey_custom", ""))
+        self._custom_edit.setPlaceholderText("e.g. Win+Y")
+        custom_form = QFormLayout()
+        custom_form.addRow("Custom shortcut:", self._custom_edit)
+        hotkey_layout.addLayout(custom_form)
+
+        layout.addRow(hotkey_group)
 
         # Language (optional)
         self._language_edit = QLineEdit(self._config.get("language", ""))
@@ -42,7 +57,9 @@ class SettingsDialog(QDialog):
 
     def _on_ok(self):
         self._config["api_key"] = self._api_key_edit.text().strip()
-        self._config["hotkey"] = self._hotkey_edit.text().strip() or "Ctrl+Shift+F23"
+        self._config["hotkey_copilot"] = self._copilot_cb.isChecked()
+        self._config["hotkey_win_h"] = self._win_h_cb.isChecked()
+        self._config["hotkey_custom"] = self._custom_edit.text().strip()
         self._config["language"] = self._language_edit.text().strip()
         config.save(self._config)
         self.accept()

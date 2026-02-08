@@ -45,7 +45,8 @@ class TrayIcon(QSystemTrayIcon):
         status = "Recording..." if recording else "Idle"
         tip = f"Dictation Hotkey — {status}"
         if self._hotkey:
-            tip += f"\nHotkey: {self._hotkey}"
+            label = "Hotkeys" if ", " in self._hotkey else "Hotkey"
+            tip += f"\n{label}: {self._hotkey}"
         self.setToolTip(tip)
 
     def update_hotkey(self, hotkey: str):
