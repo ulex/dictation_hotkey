@@ -31,3 +31,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/DictationHotkey.exe
+          token: ${{ secrets.PUB_TOKEN }}
