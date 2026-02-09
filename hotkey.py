@@ -1,3 +1,5 @@
+import time
+
 import keyboard
 
 from PySide6.QtCore import QObject, Signal
@@ -37,13 +39,13 @@ class GlobalHotkey(QObject):
         super().__init__(parent)
         self._combos = combos or []
         self._parsed: list[tuple[frozenset[str], str]] = []
-        self._held: set[str] = set()
+        self._last_trigger = 0.0
         self._hook = None
 
     def start(self):
         """Register the hotkeys via low-level keyboard hook."""
         self._parsed = [_parse_combo(c) for c in self._combos]
-        self._held.clear()
+        self._last_trigger = 0.0
         if self._parsed:
             self._hook = keyboard.hook(self._on_event, suppress=True)
 
@@ -52,20 +54,17 @@ class GlobalHotkey(QObject):
         if not event.name:
             return True
         name = event.name.lower()
-        if event.event_type == "up":
-            self._held.discard(name)
-            return True
         if event.event_type != "down":
             return True
-        is_repeat = name in self._held
-        self._held.add(name)
+        now = time.monotonic()
         active = None
         for modifiers, key in self._parsed:
             if name == key:
                 if active is None:
                     active = _get_active_modifiers()
                 if active == modifiers:
-                    if not is_repeat:
+                    if now - self._last_trigger > 1.0:
+                        self._last_trigger = now
                         self.triggered.emit()
                     return False  # suppress the key (initial and repeats)
         return True  # pass through

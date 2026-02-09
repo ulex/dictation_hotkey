@@ -88,6 +88,8 @@ class App(QObject):
         self._audio.stop()
         self._transcription.stop()
         self._tray.set_recording(False)
+        _windir = os.environ.get("WINDIR", r"C:\Windows")
+        winsound.PlaySound(os.path.join(_windir, "Media", "Speech Off.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
 
         if self._chars_typed > 0:
             self._overlay.show_status("Done", auto_hide_ms=1500)
@@ -96,6 +98,10 @@ class App(QObject):
 
     @Slot(str)
     def _on_text_delta(self, delta: str):
+        if self._chars_typed == 0:  # Mistral often returns leading space in first chunk
+            delta = delta.lstrip()
+            if not delta:
+                return
         self._chars_typed += len(delta)
         type_text(delta)
 
