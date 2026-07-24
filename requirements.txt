@@ -1,4 +1,8 @@
 PySide6
 mistralai[realtime]
 miniaudio
-keyboard
+keyboard; sys_platform == "win32"
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-AVFoundation; sys_platform == "darwin"
+pyobjc-framework-Speech; sys_platform == "darwin"

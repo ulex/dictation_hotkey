@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Windows-only system tray dictation app. Global hotkey toggles mic recording on/off. While recording, audio streams to Mistral's realtime transcription API and text is typed into the focused window via SendInput as it arrives (real-time, not buffered).
+System tray dictation app for Windows and macOS. Global hotkey toggles mic recording on/off. While recording, audio streams to a speech-to-text provider and text is typed into the focused window as it arrives (real-time, not buffered).
+
+Providers: Mistral realtime transcription API (both platforms) or, on macOS, the native Speech framework (`SFSpeechRecognizer`, on-device, no API key — default there).
 
 ## Running
 
@@ -18,40 +20,56 @@ No tests or linter configured.
 ## Architecture
 
 ```
-Hotkey press (Win+Y)
+Hotkey press (Win+Y / Option+Space)
     │
     ▼
 main.py App._on_hotkey()  ──toggles──►  App._start_recording() / _stop_recording()
     │                                        │
-    │                                        ├─ audio.py AudioCapture
-    │                                        │    sounddevice InputStream → base64 PCM16 → queue.Queue
+    │                                        ├─ audio.py AudioCapture  (Mistral provider only)
+    │                                        │    miniaudio CaptureDevice → base64 PCM16 → queue.Queue
     │                                        │
-    │                                        ├─ transcription.py TranscriptionWorker
+    │                                        ├─ transcription.py TranscriptionWorker  (Mistral)
     │                                        │    Reads queue in async generator → Mistral WebSocket
     │                                        │    Emits text_delta Signal per chunk
     │                                        │
-    │                                        └─ typing_output.py type_text()
-    │                                             Called on each text_delta → SendInput KEYEVENTF_UNICODE
+    │                                        ├─ speech_macos.py NativeSpeechWorker  (macOS native)
+    │                                        │    AVAudioEngine tap → SFSpeechRecognizer streaming
+    │                                        │    Diffs partial results → text_delta + backspaces Signals
+    │                                        │
+    │                                        └─ typing_output.py type_text()/press_backspace()
+    │                                             Called on each delta → per-platform key events
     ▼
 overlay.py  ── frameless always-on-top status widget
 tray.py     ── QSystemTrayIcon with Settings/Quit menu
-settings.py ── QDialog for API key, hotkey, language
-config.py   ── JSON persistence in %APPDATA%/dictation_hotkey/
+settings.py ── QDialog for provider, API key, hotkey, language
+config.py   ── JSON persistence (per-platform config dir)
+sounds.py   ── per-platform start/stop recording sounds
 ```
+
+## Platform layers
+
+`hotkey.py` and `typing_output.py` are dispatchers that import a per-platform implementation:
+
+- Windows: `hotkey_windows.py` (low-level keyboard hook), `typing_windows.py` (SendInput)
+- macOS: `hotkey_macos.py` (Quartz CGEventTap on a background CFRunLoop), `typing_macos.py` (Quartz CGEvent Unicode events)
+
+Both transcription workers expose the same interface: `text_delta`, `status_changed`, `error`, `finished` signals, `start(api_key, audio_queue, language)`, `stop()`, and `needs_api_key` / `needs_audio_queue` class attributes. `NativeSpeechWorker` adds a `backspaces(int)` signal because `SFSpeechRecognizer` revises partial results.
 
 ## Threading Model
 
 Three threads matter:
 1. **Main thread (Qt)** — event loop, UI, signal/slot dispatch
-2. **Hotkey thread** — Win32 `RegisterHotKey` + `GetMessageW` pump, emits Qt signal on hotkey
-3. **Async thread** — `asyncio.run_forever()` hosts the Mistral WebSocket coroutine and audio stream generator
+2. **Hotkey thread** — Windows: `keyboard` hook thread; macOS: background `CFRunLoop` hosting the Quartz event tap. Emits Qt signal on hotkey
+3. **Async thread** — `asyncio.run_forever()` hosts the Mistral WebSocket coroutine and audio stream generator (Mistral provider only)
 
-`TranscriptionWorker` lives as a QObject on the main thread. Its `_handle` coroutine runs on the async thread via `run_coroutine_threadsafe`, but emits Qt signals (`text_delta`, `error`, `finished`) which are delivered to the main thread's event loop.
+`TranscriptionWorker` lives as a QObject on the main thread. Its `_handle` coroutine runs on the async thread via `run_coroutine_threadsafe`, but emits Qt signals (`text_delta`, `error`, `finished`) which are delivered to the main thread's event loop. `NativeSpeechWorker` callbacks (recognition results, AVAudioEngine tap) arrive on Apple framework threads and likewise cross into the main thread via queued Qt signals.
 
 ## Key Constraints
 
-- **Windows-only**: uses `ctypes.windll.user32` for hotkey registration and SendInput
+- **Windows**: uses `ctypes.windll.user32` for SendInput typing and Escape polling
 - **Win32 INPUT struct**: the union must include MOUSEINPUT (largest member) for correct `sizeof(INPUT)`, otherwise SendInput silently fails
+- **macOS**: hotkey (CGEventTap) and typing (CGEventPost) both require Accessibility permission; native provider additionally needs Speech Recognition + Microphone permission. Default hotkey is Option+Space (Win maps to Cmd; Cmd+H would clash with Hide App)
+- **macOS key events**: `CGEventKeyboardSetUnicodeString` length is in UTF-16 code units, not Python characters
 - Audio format must be PCM16 mono 16kHz (`pcm_s16le`) to match Mistral's expected format
 - 2 seconds of silence warmup is sent before real audio to initialize the Mistral session
 - `proto/` is a reference Gradio app (not part of this app) — kept for API usage examples only

@@ -72,6 +72,9 @@ class TranscriptionWorker(QObject):
     error = Signal(str)
     finished = Signal()
 
+    needs_api_key = True
+    needs_audio_queue = True
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = False
@@ -81,7 +84,7 @@ class TranscriptionWorker(QObject):
     def is_running(self) -> bool:
         return self._running
 
-    def start(self, api_key: str, audio_queue: queue.Queue):
+    def start(self, api_key: str = "", audio_queue=None, language: str = ""):
         """Start transcription on the shared event loop."""
         self._running = True
         loop = _get_event_loop()
