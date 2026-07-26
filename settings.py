@@ -39,7 +39,7 @@ class SettingsDialog(QDialog):
         hotkey_group = QGroupBox("Hotkeys")
         hotkey_layout = QVBoxLayout(hotkey_group)
 
-        if not config.IS_MACOS:
+        if config.IS_WINDOWS:
             self._copilot_cb = QCheckBox("Use Copilot key (Win+C, Win+Shift+F23)")
             self._copilot_cb.setChecked(self._config.get("hotkey_copilot", False))
             hotkey_layout.addWidget(self._copilot_cb)
@@ -55,6 +55,10 @@ class SettingsDialog(QDialog):
         if config.IS_MACOS:
             self._custom_edit.setPlaceholderText(
                 f"e.g. Cmd+Shift+D (default: {config.DEFAULT_HOTKEY_MACOS})"
+            )
+        elif config.IS_LINUX:
+            self._custom_edit.setPlaceholderText(
+                f"e.g. Ctrl+Alt+D (default: {config.DEFAULT_HOTKEY_LINUX})"
             )
         else:
             self._custom_edit.setPlaceholderText("e.g. Win+Y")
@@ -73,7 +77,10 @@ class SettingsDialog(QDialog):
         layout.addRow("Language:", self._language_edit)
 
         # Launch at login
-        label = "Launch at login" if config.IS_MACOS else "Start with Windows"
+        if config.IS_WINDOWS:
+            label = "Start with Windows"
+        else:
+            label = "Launch at login"
         self._startup_cb = QCheckBox(label)
         self._startup_cb.setChecked(self._config.get("start_with_windows", False))
         layout.addRow(self._startup_cb)

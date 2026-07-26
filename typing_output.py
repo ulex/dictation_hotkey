@@ -2,7 +2,9 @@ import sys
 
 if sys.platform == "darwin":
     from typing_macos import press_backspace, type_text
-else:
+elif sys.platform == "win32":
     from typing_windows import press_backspace, type_text
+else:
+    from typing_linux import press_backspace, type_text
 
 __all__ = ["type_text", "press_backspace"]

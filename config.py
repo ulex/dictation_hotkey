@@ -5,9 +5,16 @@ import subprocess
 import sys
 
 IS_MACOS = sys.platform == "darwin"
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
 if IS_MACOS:
     CONFIG_DIR = os.path.expanduser("~/Library/Application Support/dictation_hotkey")
+elif IS_LINUX:
+    CONFIG_DIR = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+        "dictation_hotkey",
+    )
 else:
     CONFIG_DIR = os.path.join(
         os.environ.get("APPDATA", os.path.expanduser("~")), "dictation_hotkey"
@@ -25,6 +32,7 @@ DEFAULTS = {
 }
 
 DEFAULT_HOTKEY_MACOS = "Option+Space"
+DEFAULT_HOTKEY_LINUX = "Alt+Space"
 
 STARTUP_DIR = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
@@ -36,6 +44,11 @@ LAUNCH_AGENT_LABEL = "com.dictationhotkey"
 LAUNCH_AGENT_PATH = os.path.expanduser(
     f"~/Library/LaunchAgents/{LAUNCH_AGENT_LABEL}.plist"
 )
+
+AUTOSTART_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "autostart"
+)
+AUTOSTART_PATH = os.path.join(AUTOSTART_DIR, "dictation_hotkey.desktop")
 
 
 def load() -> dict:
@@ -54,6 +67,9 @@ def get_hotkey_combos(cfg: dict) -> list[str]:
     if IS_MACOS:
         custom = cfg.get("hotkey_custom", "").strip()
         return [custom] if custom else [DEFAULT_HOTKEY_MACOS]
+    if IS_LINUX:
+        custom = cfg.get("hotkey_custom", "").strip()
+        return [custom] if custom else [DEFAULT_HOTKEY_LINUX]
     combos = []
     if cfg.get("hotkey_copilot"):
         combos.extend(["Win+C", "Win+Shift+F23"])
@@ -76,6 +92,8 @@ def set_startup_shortcut(enable: bool):
     """Enable or disable launching the app at login."""
     if IS_MACOS:
         _set_login_item(enable)
+    elif IS_LINUX:
+        _set_autostart_desktop(enable)
     else:
         _set_startup_shortcut_windows(enable)
 
@@ -111,6 +129,26 @@ def _set_login_item(enable: bool):
         )
         if os.path.exists(LAUNCH_AGENT_PATH):
             os.remove(LAUNCH_AGENT_PATH)
+
+
+def _set_autostart_desktop(enable: bool):
+    """Create or remove an XDG autostart .desktop file."""
+    if enable:
+        import shlex
+
+        exec_line = " ".join(shlex.quote(a) for a in _program_arguments())
+        os.makedirs(AUTOSTART_DIR, exist_ok=True)
+        with open(AUTOSTART_PATH, "w", encoding="utf-8") as f:
+            f.write(
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Dictation Hotkey\n"
+                f"Exec={exec_line}\n"
+                "X-GNOME-Autostart-enabled=true\n"
+            )
+    else:
+        if os.path.exists(AUTOSTART_PATH):
+            os.remove(AUTOSTART_PATH)
 
 
 def _set_startup_shortcut_windows(enable: bool):

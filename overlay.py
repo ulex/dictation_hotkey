@@ -50,6 +50,9 @@ class OverlayWidget(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            # Never take keyboard focus: on Wayland a focused overlay would
+            # receive the dictated text instead of the target window.
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowOpacity(self.WINDOW_OPACITY)

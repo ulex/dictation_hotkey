@@ -3,8 +3,9 @@
 I was impressed by the `mistralai/Voxtral-Mini-Realtime` model and wanted to use it as a dictation app for Windows.
 Before downloading, you might want to try the [online demo](https://huggingface.co/spaces/mistralai/Voxtral-Mini-Realtime) provided by Mistral.
 
-Runs on **Windows** and **macOS**. On macOS it can use the built-in, on-device
-Speech framework (no API key needed) or the Mistral cloud API.
+Runs on **Windows**, **macOS** and **Linux** (Wayland and X11). On macOS it can
+use the built-in, on-device Speech framework (no API key needed); other
+platforms use the Mistral cloud API.
 
 ![](.github/interface.png)
 
@@ -59,6 +60,39 @@ python main.py
 
 When running from source, the permissions are attributed to your terminal app.
 
+### Linux
+
+Run from source:
+
+```
+pip install -r requirements.txt
+python main.py
+```
+
+Prerequisites:
+
+- A [Mistral API key](https://console.mistral.ai/) with access to the real-time transcription API
+- **Wayland typing**: a compositor supporting the `zwp_virtual_keyboard_manager_v1`
+  protocol — wlroots-based (Sway, Hyprland, ...) or KDE KWin. Otherwise install
+  `wtype` or `ydotool` as a fallback. (GNOME/mutter does not support the protocol;
+  use `ydotool` there.)
+- **X11 typing**: install `xdotool`.
+- **Global hotkey**: the app reads keyboard devices directly from `/dev/input`
+  (works on both Wayland and X11), so your user needs read access to them, plus
+  access to `/dev/uinput` so matching hotkey presses can be suppressed:
+
+```
+sudo usermod -aG input $USER
+echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-dictation-uinput.rules
+sudo udevadm control --reload && sudo udevadm trigger /dev/uinput
+```
+
+(log out/in for the group change to take effect.)
+
+Without uinput access the hotkey still works in passive mode, but the hotkey
+keypress will also reach the focused application. Default hotkey: **Alt+Space**
+(configurable in Settings).
+
 ### Build
 
 See [github workflow file](./.github/workflows/build.yml) — it builds the Windows exe
@@ -82,10 +116,10 @@ The hardened runtime (`--options runtime`) is required for notarization.
 
 ## Platform notes
 
-| | Windows | macOS |
-|---|---|---|
-| Speech-to-text | Mistral realtime API | Speech framework (native, on-device) or Mistral |
-| Typing | `SendInput` Unicode events | Quartz `CGEvent` Unicode events |
-| Global hotkey | low-level keyboard hook | Quartz `CGEventTap` |
-| Autostart | Startup folder shortcut | `~/Library/LaunchAgents` plist |
-| Config | `%APPDATA%\dictation_hotkey` | `~/Library/Application Support/dictation_hotkey` |
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Speech-to-text | Mistral realtime API | Speech framework (native, on-device) or Mistral | Mistral realtime API |
+| Typing | `SendInput` Unicode events | Quartz `CGEvent` Unicode events | Wayland virtual keyboard protocol (`wtype`/`ydotool` fallback), `xdotool` on X11 |
+| Global hotkey | low-level keyboard hook | Quartz `CGEventTap` | evdev (`/dev/input`) grab + uinput replay |
+| Autostart | Startup folder shortcut | `~/Library/LaunchAgents` plist | XDG autostart `.desktop` file |
+| Config | `%APPDATA%\dictation_hotkey` | `~/Library/Application Support/dictation_hotkey` | `~/.config/dictation_hotkey` |
