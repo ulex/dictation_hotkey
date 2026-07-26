@@ -34,15 +34,8 @@ jobs:
           token: ${{ secrets.PUB_TOKEN }}
 
   build-macos:
-    # macos-14 = Apple Silicon (arm64), macos-13 = Intel (x86_64)
-    strategy:
-      matrix:
-        include:
-          - os: macos-14
-            arch: AppleSilicon
-          - os: macos-13
-            arch: Intel
-    runs-on: ${{ matrix.os }}
+    # macos-14 = Apple Silicon (arm64)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -71,15 +64,41 @@ jobs:
             -volname "Dictation Hotkey" \
             -srcfolder dist/dmg \
             -ov -format UDZO \
-            "dist/DictationHotkey-macOS-${{ matrix.arch }}.dmg"
+            "dist/DictationHotkey-macOS-AppleSilicon.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DictationHotkey-macOS-${{ matrix.arch }}
-          path: dist/DictationHotkey-macOS-${{ matrix.arch }}.dmg
+          name: DictationHotkey-macOS-AppleSilicon
+          path: dist/DictationHotkey-macOS-AppleSilicon.dmg
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
-          files: dist/DictationHotkey-macOS-${{ matrix.arch }}.dmg
+          files: dist/DictationHotkey-macOS-AppleSilicon.dmg
+          token: ${{ secrets.PUB_TOKEN }}
+
+  build-linux-flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/com.dictationhotkey.DictationHotkey.yml
+          bundle: DictationHotkey-Linux.flatpak
+          cache-key: flatpak-builder-${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictationHotkey-Linux
+          path: DictationHotkey-Linux.flatpak
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: DictationHotkey-Linux.flatpak
           token: ${{ secrets.PUB_TOKEN }}

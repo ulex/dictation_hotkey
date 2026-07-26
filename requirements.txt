@@ -1,5 +1,6 @@
 PySide6
-mistralai[realtime]
+# 2.x moved `Mistral` to mistralai.client; the code targets the 1.x API
+mistralai[realtime]<2
 miniaudio
 keyboard; sys_platform == "win32"
 evdev; sys_platform == "linux"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Dictation Hotkey
+Comment=Global-hotkey dictation: transcribe speech into the focused window
+Exec=dictation-hotkey
+Icon=com.dictationhotkey.DictationHotkey
+Categories=Utility;Accessibility;
+Terminal=false

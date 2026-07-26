@@ -7,3 +7,6 @@ dist/
 build/
 .claude/
 proto/
+.flatpak-builder/
+.fp-build/
+.fp-repo/

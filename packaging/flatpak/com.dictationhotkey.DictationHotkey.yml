@@ -1,0 +1,36 @@
+app-id: com.dictationhotkey.DictationHotkey
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: dictation-hotkey
+
+finish-args:
+  # Wayland display (native typing via zwp_virtual_keyboard_manager_v1) + X11 fallback
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Microphone (PipeWire/PulseAudio)
+  - --socket=pulseaudio
+  # Global hotkey reads /dev/input/event* (evdev) and suppresses matching
+  # combos via /dev/uinput
+  - --device=all
+  # Mistral transcription API
+  - --share=network
+  # Status notifications
+  - --talk-name=org.freedesktop.Notifications
+
+modules:
+  - name: dictation-hotkey
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      - pip3 install --no-cache-dir --prefix=/app -r requirements.txt
+      - install -Dm755 packaging/flatpak/dictation-hotkey.sh /app/bin/dictation-hotkey
+      - install -Dm644 -t /app/share/dictation-hotkey/ ./*.py
+      - install -Dm644 packaging/flatpak/com.dictationhotkey.DictationHotkey.desktop /app/share/applications/com.dictationhotkey.DictationHotkey.desktop
+      - install -Dm644 packaging/flatpak/com.dictationhotkey.DictationHotkey.svg /app/share/icons/hicolor/scalable/apps/com.dictationhotkey.DictationHotkey.svg
+    sources:
+      - type: dir
+        path: ../..

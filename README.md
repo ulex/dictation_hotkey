@@ -33,9 +33,8 @@ Download `DictationHotkey.exe` from the [latest release](../../releases/latest) 
 
 ### macOS
 
-Download `DictationHotkey-macOS-AppleSilicon.dmg` (M1/M2/M3/M4) or
-`DictationHotkey-macOS-Intel.dmg` from the [latest release](../../releases/latest),
-drag the app to Applications, and launch it.
+Download `DictationHotkey-macOS-AppleSilicon.dmg` (M1/M2/M3/M4) from the
+[latest release](../../releases/latest), drag the app to Applications, and launch it.
 
 The app is ad-hoc signed (no Apple Developer account), so the first launch must be:
 **right-click the app → Open → Open**, or remove the quarantine flag:
@@ -62,7 +61,19 @@ When running from source, the permissions are attributed to your terminal app.
 
 ### Linux
 
-Run from source:
+Download `DictationHotkey-Linux.flatpak` from the
+[latest release](../../releases/latest) and install it:
+
+```
+flatpak install DictationHotkey-Linux.flatpak
+```
+
+The sandbox already grants access to the microphone, `/dev/input` (global hotkey),
+`/dev/uinput` (hotkey suppression) and the Wayland virtual-keyboard protocol, so no
+extra host setup is needed — but your compositor still needs to support
+`zwp_virtual_keyboard_manager_v1` (wlroots/KWin; not GNOME).
+
+Or run from source:
 
 ```
 pip install -r requirements.txt
@@ -95,8 +106,9 @@ keypress will also reach the focused application. Default hotkey: **Alt+Space**
 
 ### Build
 
-See [github workflow file](./.github/workflows/build.yml) — it builds the Windows exe
-and macOS app bundles (Apple Silicon + Intel DMGs) and attaches them to tag releases.
+See [github workflow file](./.github/workflows/build.yml) — it builds the Windows exe,
+the macOS app bundle (Apple Silicon DMG) and a Linux Flatpak bundle, and attaches
+them to tag releases.
 **Beware:** most of the code was AI-generated. The code quality is poor.
 
 #### Signing and notarizing the macOS build
