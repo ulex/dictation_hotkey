@@ -148,7 +148,8 @@ class App(QObject):
             import transcription
             log_buffer.log(f"[{time.perf_counter() - transcription._t0:+.3f}s] first type_text() call: {delta!r}")
         self._chars_typed += len(delta)
-        type_text(delta)
+        type_text(delta, mode=self._config.get("typing_mode", "paste"),
+                  paste_shortcut=self._config.get("paste_shortcut", "shift_insert"))
 
     @Slot()
     def _on_overlay_clicked(self):

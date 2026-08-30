@@ -1,4 +1,4 @@
 PySide6
-mistralai[realtime]
+mistralai[realtime]<2
 miniaudio
 keyboard

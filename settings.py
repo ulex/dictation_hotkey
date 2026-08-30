@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton,
-    QDialogButtonBox, QLabel, QCheckBox, QGroupBox, QVBoxLayout,
+    QDialogButtonBox, QLabel, QCheckBox, QComboBox, QGroupBox, QVBoxLayout,
 )
 
 import config
@@ -56,6 +56,23 @@ class SettingsDialog(QDialog):
         )
         layout.addRow(self._offline_cb)
 
+        # Typing method
+        self._typing_mode_combo = QComboBox()
+        self._typing_mode_combo.addItem("Clipboard paste (reliable over Remote Desktop)", "paste")
+        self._typing_mode_combo.addItem("Simulated keystrokes", "keystrokes")
+        idx = self._typing_mode_combo.findData(self._config.get("typing_mode", "paste"))
+        self._typing_mode_combo.setCurrentIndex(max(idx, 0))
+        layout.addRow("Typing method:", self._typing_mode_combo)
+
+        # Paste shortcut (used in paste mode)
+        self._paste_shortcut_combo = QComboBox()
+        self._paste_shortcut_combo.addItem("Shift+Insert (works in consoles too)", "shift_insert")
+        self._paste_shortcut_combo.addItem("Ctrl+V", "ctrl_v")
+        self._paste_shortcut_combo.addItem("Ctrl+Shift+V (terminals)", "ctrl_shift_v")
+        idx = self._paste_shortcut_combo.findData(self._config.get("paste_shortcut", "shift_insert"))
+        self._paste_shortcut_combo.setCurrentIndex(max(idx, 0))
+        layout.addRow("Paste shortcut:", self._paste_shortcut_combo)
+
         # Start with Windows
         self._startup_cb = QCheckBox("Start with Windows")
         self._startup_cb.setChecked(self._config.get("start_with_windows", False))
@@ -76,6 +93,8 @@ class SettingsDialog(QDialog):
         self._config["hotkey_custom"] = self._custom_edit.text().strip()
         self._config["language"] = self._language_edit.text().strip()
         self._config["offline_mode"] = self._offline_cb.isChecked()
+        self._config["typing_mode"] = self._typing_mode_combo.currentData()
+        self._config["paste_shortcut"] = self._paste_shortcut_combo.currentData()
         new_startup = self._startup_cb.isChecked()
         if new_startup != self._config.get("start_with_windows", False):
             config.set_startup_shortcut(new_startup)

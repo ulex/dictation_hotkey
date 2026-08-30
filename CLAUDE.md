@@ -31,7 +31,9 @@ main.py App._on_hotkey()  ──toggles──►  App._start_recording() / _stop
     │                                        │    Emits text_delta Signal per chunk
     │                                        │
     │                                        └─ typing_output.py type_text()
-    │                                             Called on each text_delta → SendInput KEYEVENTF_UNICODE
+    │                                             "paste" mode (default): set clipboard → paste shortcut
+    │                                             (Shift+Insert / Ctrl+V / Ctrl+Shift+V, configurable)
+    │                                             "keystrokes" mode: one batched SendInput KEYEVENTF_UNICODE call
     ▼
 overlay.py  ── frameless always-on-top status widget
 tray.py     ── QSystemTrayIcon with Settings/Quit menu

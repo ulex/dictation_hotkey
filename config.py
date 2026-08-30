@@ -12,6 +12,8 @@ DEFAULTS = {
     "hotkey_win_h": True,
     "hotkey_custom": "",
     "language": "",
+    "typing_mode": "paste",
+    "paste_shortcut": "shift_insert",
     "start_with_windows": False,
     "offline_mode": False,
 }
