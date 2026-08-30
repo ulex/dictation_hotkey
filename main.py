@@ -2,6 +2,9 @@ import ctypes
 import os
 import signal
 import sys
+import time
+import traceback
+import threading
 import winsound
 
 from PySide6.QtWidgets import QApplication
@@ -10,6 +13,7 @@ from PySide6.QtCore import QObject, QTimer, Slot
 VK_ESCAPE = 0x1B
 
 import config
+import log_buffer
 from audio import AudioCapture
 from transcription import TranscriptionWorker
 from typing_output import type_text
@@ -17,6 +21,7 @@ from hotkey import GlobalHotkey
 from overlay import OverlayWidget
 from tray import TrayIcon
 from settings import SettingsDialog
+from log_viewer import LogViewerDialog
 
 
 class App(QObject):
@@ -26,6 +31,8 @@ class App(QObject):
         super().__init__()
         self._config = config.load()
         self._recording = False
+        self._fallback_mode = False   # realtime failed, mic still running for offline
+        self._offline_running = False  # offline API call in flight
         self._chars_typed = 0
 
         # Components
@@ -33,8 +40,9 @@ class App(QObject):
         self._transcription = TranscriptionWorker()
         self._overlay = OverlayWidget()
         combos = config.get_hotkey_combos(self._config)
-        self._tray = TrayIcon(hotkey=", ".join(combos))
+        self._tray = TrayIcon(hotkey=", ".join(combos), offline_mode=self._config.get("offline_mode", False))
         self._hotkey = GlobalHotkey(combos=combos)
+        self._log_viewer = LogViewerDialog()
 
         # Escape key polling timer
         self._esc_timer = QTimer(self)
@@ -48,6 +56,8 @@ class App(QObject):
         self._transcription.error.connect(self._on_error)
         self._transcription.finished.connect(self._on_transcription_finished)
         self._tray.settings_requested.connect(self._open_settings)
+        self._tray.logs_requested.connect(self._log_viewer.show_and_raise)
+        self._tray.offline_mode_toggled.connect(self._on_offline_mode_toggled)
         self._tray.quit_requested.connect(QApplication.quit)
 
         # Start
@@ -73,23 +83,56 @@ class App(QObject):
             return
 
         self._recording = True
+        self._offline_running = False
         self._chars_typed = 0
         _windir = os.environ.get("WINDIR", r"C:\Windows")
         winsound.PlaySound(os.path.join(_windir, "Media", "Speech On.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._audio.start()
-        self._transcription.start(api_key, self._audio.queue)
+
+        if self._config.get("offline_mode", False):
+            self._fallback_mode = True  # go straight to offline on stop
+            self._overlay.show_status("🎙️ Recording...", recording=True)
+        else:
+            self._fallback_mode = False
+            self._transcription.start(api_key, self._audio.queue)
+            self._overlay.show_status("🎙️ Listening...", recording=True)
+
         self._tray.set_recording(True)
-        self._overlay.show_status("🎙️ Listening...", recording=True)
         self._esc_timer.start()
 
     def _stop_recording(self):
         self._esc_timer.stop()
+        _windir = os.environ.get("WINDIR", r"C:\Windows")
+        winsound.PlaySound(os.path.join(_windir, "Media", "Speech Off.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+        if self._fallback_mode:
+            # Realtime failed earlier — collect buffered audio and transcribe offline
+            wav_bytes = self._audio.get_wav_bytes()
+            self._audio.stop()
+            self._transcription.stop()
+            self._offline_running = True
+            self._overlay.show_status("⏳ Transcribing...", recording=True)
+            log_buffer.log(f"stopping — submitting {len(wav_bytes) / 1024:.1f} KB to offline API")
+            self._transcription.start_offline(self._config.get("api_key", ""), wav_bytes)
+            return  # finalization happens in _on_transcription_finished
+
+        # Normal stop
         self._recording = False
         self._audio.stop()
         self._transcription.stop()
         self._tray.set_recording(False)
-        _windir = os.environ.get("WINDIR", r"C:\Windows")
-        winsound.PlaySound(os.path.join(_windir, "Media", "Speech Off.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+        if self._chars_typed > 0:
+            self._overlay.show_status("Done", auto_hide_ms=1500)
+        else:
+            self._overlay.show_status("No speech detected", auto_hide_ms=1500)
+
+    def _finalize_stop(self):
+        """Called after offline transcription completes."""
+        self._recording = False
+        self._fallback_mode = False
+        self._offline_running = False
+        self._tray.set_recording(False)
 
         if self._chars_typed > 0:
             self._overlay.show_status("Done", auto_hide_ms=1500)
@@ -102,6 +145,8 @@ class App(QObject):
             delta = delta.lstrip()
             if not delta:
                 return
+            import transcription
+            log_buffer.log(f"[{time.perf_counter() - transcription._t0:+.3f}s] first type_text() call: {delta!r}")
         self._chars_typed += len(delta)
         type_text(delta)
 
@@ -118,16 +163,38 @@ class App(QObject):
 
     @Slot(str)
     def _on_error(self, msg: str):
-        self._overlay.show_status("Error", auto_hide_ms=2000)
-        if self._recording:
+        log_buffer.log(f"ERROR: {msg}")
+        if self._recording and not self._offline_running:
+            # Realtime failed — switch to offline fallback, keep mic running
+            self._fallback_mode = True
+            log_buffer.log("switching to offline fallback — mic still recording")
+            self._overlay.show_status("🎙️ Offline mode...", recording=True)
+        elif self._offline_running:
+            # Offline also failed — give up
+            self._overlay.show_status("Error", auto_hide_ms=2000)
             self._recording = False
+            self._fallback_mode = False
+            self._offline_running = False
             self._audio.stop()
             self._tray.set_recording(False)
 
     @Slot()
     def _on_transcription_finished(self):
-        if self._recording:
+        if self._offline_running:
+            # Offline transcription just completed
+            self._finalize_stop()
+        elif self._fallback_mode:
+            # Realtime stopped, we're still recording mic — do nothing
+            pass
+        elif self._recording:
+            # Realtime stream ended normally
             self._stop_recording()
+
+    @Slot(bool)
+    def _on_offline_mode_toggled(self, enabled: bool):
+        self._config["offline_mode"] = enabled
+        config.save(self._config)
+        log_buffer.log(f"offline mode {'enabled' if enabled else 'disabled'}")
 
     @Slot()
     def _open_settings(self):
@@ -141,12 +208,30 @@ class App(QObject):
                 self._hotkey.update_combos(new_combos)
                 self._hotkey.start()
                 self._tray.update_hotkey(", ".join(new_combos))
+            self._tray.set_offline_mode(self._config.get("offline_mode", False))
+
+
+def _install_exception_hooks():
+    def _excepthook(exc_type, exc_value, exc_tb):
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        log_buffer.log(f"UNHANDLED EXCEPTION:\n{tb}")
+
+    def _thread_excepthook(args):
+        if args.exc_type is SystemExit:
+            return
+        tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_tb))
+        log_buffer.log(f"UNHANDLED EXCEPTION (thread {args.thread.name}):\n{tb}")
+
+    sys.excepthook = _excepthook
+    threading.excepthook = _thread_excepthook
 
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    log_buffer.init_emitter()
+    _install_exception_hooks()
     # Timer lets Python's signal handler run inside Qt's event loop
     tick = QTimer()
     tick.start(500)

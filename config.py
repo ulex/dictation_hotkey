@@ -13,6 +13,7 @@ DEFAULTS = {
     "hotkey_custom": "",
     "language": "",
     "start_with_windows": False,
+    "offline_mode": False,
 }
 
 STARTUP_DIR = os.path.join(

@@ -47,6 +47,15 @@ class SettingsDialog(QDialog):
         self._language_edit.setPlaceholderText("e.g. en (leave blank for auto)")
         layout.addRow("Language:", self._language_edit)
 
+        # Offline transcription mode
+        self._offline_cb = QCheckBox("Offline transcription (record first, then transcribe)")
+        self._offline_cb.setChecked(self._config.get("offline_mode", False))
+        self._offline_cb.setToolTip(
+            "Record the full audio first, then send to voxtral-mini-latest.\n"
+            "Slower but more reliable than realtime streaming."
+        )
+        layout.addRow(self._offline_cb)
+
         # Start with Windows
         self._startup_cb = QCheckBox("Start with Windows")
         self._startup_cb.setChecked(self._config.get("start_with_windows", False))
@@ -66,6 +75,7 @@ class SettingsDialog(QDialog):
         self._config["hotkey_win_h"] = self._win_h_cb.isChecked()
         self._config["hotkey_custom"] = self._custom_edit.text().strip()
         self._config["language"] = self._language_edit.text().strip()
+        self._config["offline_mode"] = self._offline_cb.isChecked()
         new_startup = self._startup_cb.isChecked()
         if new_startup != self._config.get("start_with_windows", False):
             config.set_startup_shortcut(new_startup)

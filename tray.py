@@ -18,9 +18,11 @@ def _make_icon(color: str) -> QIcon:
 
 class TrayIcon(QSystemTrayIcon):
     settings_requested = Signal()
+    logs_requested = Signal()
+    offline_mode_toggled = Signal(bool)
     quit_requested = Signal()
 
-    def __init__(self, hotkey: str = "", parent=None):
+    def __init__(self, hotkey: str = "", offline_mode: bool = False, parent=None):
         super().__init__(parent)
         self._hotkey = hotkey
         self._idle_icon = _make_icon("#4A90D9")
@@ -32,6 +34,18 @@ class TrayIcon(QSystemTrayIcon):
         settings_action = QAction("Settings...", menu)
         settings_action.triggered.connect(self.settings_requested.emit)
         menu.addAction(settings_action)
+
+        logs_action = QAction("View Logs...", menu)
+        logs_action.triggered.connect(self.logs_requested.emit)
+        menu.addAction(logs_action)
+
+        menu.addSeparator()
+
+        self._offline_action = QAction("Offline transcription", menu)
+        self._offline_action.setCheckable(True)
+        self._offline_action.setChecked(offline_mode)
+        self._offline_action.triggered.connect(self.offline_mode_toggled)
+        menu.addAction(self._offline_action)
 
         menu.addSeparator()
 
@@ -52,6 +66,9 @@ class TrayIcon(QSystemTrayIcon):
     def update_hotkey(self, hotkey: str):
         self._hotkey = hotkey
         self._update_tooltip(recording=False)
+
+    def set_offline_mode(self, enabled: bool):
+        self._offline_action.setChecked(enabled)
 
     def set_recording(self, recording: bool):
         if recording:
