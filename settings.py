@@ -51,10 +51,28 @@ class SettingsDialog(QDialog):
         self._offline_cb = QCheckBox("Offline transcription (record first, then transcribe)")
         self._offline_cb.setChecked(self._config.get("offline_mode", False))
         self._offline_cb.setToolTip(
-            "Record the full audio first, then send to voxtral-mini-latest.\n"
+            "Record the full audio first, then send it for transcription.\n"
             "Slower but more reliable than realtime streaming."
         )
         layout.addRow(self._offline_cb)
+
+        # Advanced API settings
+        api_group = QGroupBox("Advanced (API)")
+        api_form = QFormLayout(api_group)
+
+        self._model_edit = QLineEdit(self._config.get("model", ""))
+        self._model_edit.setPlaceholderText("default: voxtral-mini-transcribe-realtime-2602")
+        api_form.addRow("Realtime model:", self._model_edit)
+
+        self._offline_model_edit = QLineEdit(self._config.get("offline_model", ""))
+        self._offline_model_edit.setPlaceholderText("default: voxtral-mini-latest")
+        api_form.addRow("Offline model:", self._offline_model_edit)
+
+        self._base_url_edit = QLineEdit(self._config.get("base_url", ""))
+        self._base_url_edit.setPlaceholderText("default: wss://api.mistral.ai")
+        api_form.addRow("Base URL:", self._base_url_edit)
+
+        layout.addRow(api_group)
 
         # Typing method
         self._typing_mode_combo = QComboBox()
@@ -93,6 +111,9 @@ class SettingsDialog(QDialog):
         self._config["hotkey_custom"] = self._custom_edit.text().strip()
         self._config["language"] = self._language_edit.text().strip()
         self._config["offline_mode"] = self._offline_cb.isChecked()
+        self._config["model"] = self._model_edit.text().strip()
+        self._config["offline_model"] = self._offline_model_edit.text().strip()
+        self._config["base_url"] = self._base_url_edit.text().strip()
         self._config["typing_mode"] = self._typing_mode_combo.currentData()
         self._config["paste_shortcut"] = self._paste_shortcut_combo.currentData()
         new_startup = self._startup_cb.isChecked()

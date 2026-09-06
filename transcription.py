@@ -29,9 +29,9 @@ from mistralai.models import (
 
 SAMPLE_RATE = 16_000
 WARMUP_DURATION = 2.0  # seconds of silence
-MODEL = "voxtral-mini-transcribe-realtime-2602"
-OFFLINE_MODEL = "voxtral-mini-latest"
-BASE_URL = "wss://api.mistral.ai"
+DEFAULT_MODEL = "voxtral-mini-transcribe-realtime-2602"
+DEFAULT_OFFLINE_MODEL = "voxtral-mini-latest"
+DEFAULT_BASE_URL = "wss://api.mistral.ai"
 
 # Shared event loop
 _event_loop = None
@@ -93,7 +93,7 @@ class TranscriptionWorker(QObject):
     def is_running(self) -> bool:
         return self._running
 
-    def start(self, api_key: str, audio_queue: queue.Queue):
+    def start(self, api_key: str, audio_queue: queue.Queue, model: str = "", base_url: str = ""):
         """Start realtime transcription on the shared event loop."""
         global _t0
         _t0 = time.perf_counter()
@@ -101,10 +101,10 @@ class TranscriptionWorker(QObject):
         self._running = True
         loop = _get_event_loop()
         self._task = asyncio.run_coroutine_threadsafe(
-            self._handle(api_key, audio_queue), loop
+            self._handle(api_key, audio_queue, model or DEFAULT_MODEL, base_url or DEFAULT_BASE_URL), loop
         )
 
-    def start_offline(self, api_key: str, wav_bytes: bytes):
+    def start_offline(self, api_key: str, wav_bytes: bytes, offline_model: str = ""):
         """Start offline transcription with the full recorded audio."""
         global _t0
         _t0 = time.perf_counter()
@@ -112,7 +112,7 @@ class TranscriptionWorker(QObject):
         self._running = True
         loop = _get_event_loop()
         self._task = asyncio.run_coroutine_threadsafe(
-            self._handle_offline(api_key, wav_bytes), loop
+            self._handle_offline(api_key, wav_bytes, offline_model or DEFAULT_OFFLINE_MODEL), loop
         )
 
     def stop(self):
@@ -122,12 +122,12 @@ class TranscriptionWorker(QObject):
             self._task.cancel()
             self._task = None
 
-    async def _handle(self, api_key: str, audio_queue: queue.Queue):
+    async def _handle(self, api_key: str, audio_queue: queue.Queue, model: str, base_url: str):
         """Core realtime transcription coroutine."""
         _first_delta = True
         try:
-            _log("_handle() started on async thread")
-            client = Mistral(api_key=api_key, server_url=BASE_URL)
+            _log(f"_handle() started on async thread (model={model}, base_url={base_url})")
+            client = Mistral(api_key=api_key, server_url=base_url)
             audio_format = AudioFormat(encoding="pcm_s16le", sample_rate=SAMPLE_RATE)
             stream = _audio_stream(audio_queue, lambda: self._running)
 
@@ -136,7 +136,7 @@ class TranscriptionWorker(QObject):
 
             async for event in client.audio.realtime.transcribe_stream(
                 audio_stream=stream,
-                model=MODEL,
+                model=model,
                 audio_format=audio_format,
             ):
                 if not self._running:
@@ -173,14 +173,14 @@ class TranscriptionWorker(QObject):
             self._running = False
             self.finished.emit()
 
-    async def _handle_offline(self, api_key: str, wav_bytes: bytes):
-        """Offline transcription coroutine using voxtral-mini-latest."""
+    async def _handle_offline(self, api_key: str, wav_bytes: bytes, offline_model: str):
+        """Offline transcription coroutine."""
         try:
-            _log(f"_handle_offline() started — submitting to {OFFLINE_MODEL}")
+            _log(f"_handle_offline() started — submitting to {offline_model}")
             client = Mistral(api_key=api_key)
             response = await asyncio.to_thread(
                 client.audio.transcriptions.complete,
-                model=OFFLINE_MODEL,
+                model=offline_model,
                 file={"file_name": "recording.wav", "content": wav_bytes},
             )
             text = response.text or ""

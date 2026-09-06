@@ -16,6 +16,9 @@ DEFAULTS = {
     "paste_shortcut": "shift_insert",
     "start_with_windows": False,
     "offline_mode": False,
+    "model": "",
+    "offline_model": "",
+    "base_url": "",
 }
 
 STARTUP_DIR = os.path.join(

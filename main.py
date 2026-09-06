@@ -94,7 +94,11 @@ class App(QObject):
             self._overlay.show_status("🎙️ Recording...", recording=True)
         else:
             self._fallback_mode = False
-            self._transcription.start(api_key, self._audio.queue)
+            self._transcription.start(
+                api_key, self._audio.queue,
+                model=self._config.get("model", ""),
+                base_url=self._config.get("base_url", ""),
+            )
             self._overlay.show_status("🎙️ Listening...", recording=True)
 
         self._tray.set_recording(True)
@@ -113,7 +117,10 @@ class App(QObject):
             self._offline_running = True
             self._overlay.show_status("⏳ Transcribing...", recording=True)
             log_buffer.log(f"stopping — submitting {len(wav_bytes) / 1024:.1f} KB to offline API")
-            self._transcription.start_offline(self._config.get("api_key", ""), wav_bytes)
+            self._transcription.start_offline(
+                self._config.get("api_key", ""), wav_bytes,
+                offline_model=self._config.get("offline_model", ""),
+            )
             return  # finalization happens in _on_transcription_finished
 
         # Normal stop
