@@ -73,6 +73,7 @@ class TrayIcon(QSystemTrayIcon):
         if self._hotkey:
             label = "Hotkeys" if ", " in self._hotkey else "Hotkey"
             tip += f"\n{label}: {self._hotkey}"
+        tip += "\nClick icon: record to clipboard"
         self.setToolTip(tip)
 
     def update_hotkey(self, hotkey: str):

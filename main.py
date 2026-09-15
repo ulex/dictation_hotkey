@@ -36,6 +36,7 @@ class App(QObject):
         self._chars_typed = 0
         self._session_text = ""  # text of the current/last recording session
         self._last_text = ""     # last completed session's text
+        self._clipboard_only = False  # session sends text to clipboard, not keystrokes
 
         # Components
         self._audio = AudioCapture()
@@ -60,6 +61,7 @@ class App(QObject):
         self._tray.settings_requested.connect(self._open_settings)
         self._tray.logs_requested.connect(self._log_viewer.show_and_raise)
         self._tray.copy_last_text_requested.connect(self._copy_last_text)
+        self._tray.primary_clicked.connect(self._on_tray_primary_clicked)
         self._tray.offline_mode_toggled.connect(self._on_offline_mode_toggled)
         self._tray.quit_requested.connect(QApplication.quit)
 
@@ -78,7 +80,7 @@ class App(QObject):
         else:
             self._stop_recording()
 
-    def _start_recording(self):
+    def _start_recording(self, clipboard_only: bool = False):
         api_key = self._config.get("api_key", "")
         if not api_key:
             self._overlay.show_status("Set API key first", auto_hide_ms=2000)
@@ -89,13 +91,15 @@ class App(QObject):
         self._offline_running = False
         self._chars_typed = 0
         self._session_text = ""
+        self._clipboard_only = clipboard_only
         _windir = os.environ.get("WINDIR", r"C:\Windows")
         winsound.PlaySound(os.path.join(_windir, "Media", "Speech On.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._audio.start()
 
         if self._config.get("offline_mode", False):
             self._fallback_mode = True  # go straight to offline on stop
-            self._overlay.show_status("🎙️ Recording...", recording=True)
+            status = "🎙️ → clipboard..." if clipboard_only else "🎙️ Recording..."
+            self._overlay.show_status(status, recording=True)
         else:
             self._fallback_mode = False
             self._transcription.start(
@@ -103,7 +107,8 @@ class App(QObject):
                 model=self._config.get("model", ""),
                 base_url=self._config.get("base_url", ""),
             )
-            self._overlay.show_status("🎙️ Listening...", recording=True)
+            status = "🎙️ → clipboard..." if clipboard_only else "🎙️ Listening..."
+            self._overlay.show_status(status, recording=True)
 
         self._tray.set_recording(True)
         self._esc_timer.start()
@@ -132,14 +137,7 @@ class App(QObject):
         self._audio.stop()
         self._transcription.stop()
         self._tray.set_recording(False)
-
-        if self._session_text:
-            self._last_text = self._session_text
-
-        if self._chars_typed > 0:
-            self._overlay.show_status("Done", auto_hide_ms=1500)
-        else:
-            self._overlay.show_status("No speech detected", auto_hide_ms=1500)
+        self._finish_session_text()
 
     def _finalize_stop(self):
         """Called after offline transcription completes."""
@@ -147,14 +145,31 @@ class App(QObject):
         self._fallback_mode = False
         self._offline_running = False
         self._tray.set_recording(False)
+        self._finish_session_text()
 
+    def _finish_session_text(self):
+        """Wrap up session text: keep as last text; copy in clipboard-only mode."""
         if self._session_text:
             self._last_text = self._session_text
-
+        if self._clipboard_only:
+            self._clipboard_only = False
+            if self._last_text:
+                QApplication.clipboard().setText(self._last_text)
+                self._overlay.show_status(f"Copied {len(self._last_text)} chars", auto_hide_ms=1500)
+                log_buffer.log(f"clipboard-only session: copied {len(self._last_text)} chars")
+                return
         if self._chars_typed > 0:
             self._overlay.show_status("Done", auto_hide_ms=1500)
         else:
             self._overlay.show_status("No speech detected", auto_hide_ms=1500)
+
+    @Slot()
+    def _on_tray_primary_clicked(self):
+        """Left-click on the tray icon toggles a clipboard-only recording."""
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording(clipboard_only=True)
 
     @Slot()
     def _copy_last_text(self):
@@ -175,8 +190,9 @@ class App(QObject):
             log_buffer.log(f"[{time.perf_counter() - transcription._t0:+.3f}s] first type_text() call: {delta!r}")
         self._chars_typed += len(delta)
         self._session_text += delta
-        type_text(delta, mode=self._config.get("typing_mode", "paste"),
-                  paste_shortcut=self._config.get("paste_shortcut", "shift_insert"))
+        if not self._clipboard_only:
+            type_text(delta, mode=self._config.get("typing_mode", "paste"),
+                      paste_shortcut=self._config.get("paste_shortcut", "shift_insert"))
 
     @Slot()
     def _on_overlay_clicked(self):
