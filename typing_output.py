@@ -8,6 +8,20 @@ from PySide6.QtWidgets import QApplication
 INPUT_KEYBOARD = 1
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_EXTENDEDKEY = 0x0001
+MAPVK_VK_TO_VSC_EX = 4
+
+# VKs that are always extended keys (navigation cluster, arrows, ...).
+# Some keyboard drivers don't report the extended bit via
+# MAPVK_VK_TO_VSC_EX, so force it for these.
+_EXTENDED_VKS = frozenset({
+    0x21, 0x22, 0x23, 0x24,        # PageUp, PageDown, End, Home
+    0x25, 0x26, 0x27, 0x28,        # Left, Up, Right, Down
+    0x2D, 0x2E,                    # Insert, Delete
+    0x5B, 0x5C, 0x5D,              # LWin, RWin, Apps
+    0x6F,                          # Numpad Divide
+    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,  # browser keys
+})
 VK_CONTROL = 0x11
 VK_SHIFT = 0x10
 VK_V = 0x56
@@ -73,9 +87,23 @@ _SendInput = ctypes.windll.user32.SendInput
 _SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
 _SendInput.restype = ctypes.c_uint
 
+_MapVirtualKeyW = ctypes.windll.user32.MapVirtualKeyW
+_MapVirtualKeyW.argtypes = [ctypes.c_uint, ctypes.c_uint]
+_MapVirtualKeyW.restype = ctypes.c_uint
+
 
 def _key_event(inputs, i, vk, scan, flags):
     inputs[i].type = INPUT_KEYBOARD
+    if vk and not scan and not (flags & KEYEVENTF_UNICODE):
+        # Resolve the real scancode (and extended-key bit) for the VK.
+        # RDP clients and console apps rely on scancodes; without them
+        # modifiers like Shift can be dropped and extended keys such as
+        # Insert misinterpreted.
+        sc = _MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX)
+        if sc:
+            if (sc >> 8) & 0xFF in (0xE0, 0xE1) or vk in _EXTENDED_VKS:
+                flags |= KEYEVENTF_EXTENDEDKEY
+            scan = sc & 0xFF
     inputs[i].ki.wVk = vk
     inputs[i].ki.wScan = scan
     inputs[i].ki.dwFlags = flags
