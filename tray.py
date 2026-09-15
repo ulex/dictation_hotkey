@@ -19,6 +19,8 @@ def _make_icon(color: str) -> QIcon:
 class TrayIcon(QSystemTrayIcon):
     settings_requested = Signal()
     logs_requested = Signal()
+    copy_last_text_requested = Signal()
+    primary_clicked = Signal()
     offline_mode_toggled = Signal(bool)
     quit_requested = Signal()
 
@@ -39,6 +41,10 @@ class TrayIcon(QSystemTrayIcon):
         logs_action.triggered.connect(self.logs_requested.emit)
         menu.addAction(logs_action)
 
+        copy_last_action = QAction("Copy Last Text", menu)
+        copy_last_action.triggered.connect(self.copy_last_text_requested.emit)
+        menu.addAction(copy_last_action)
+
         menu.addSeparator()
 
         self._offline_action = QAction("Offline transcription", menu)
@@ -54,6 +60,12 @@ class TrayIcon(QSystemTrayIcon):
         menu.addAction(quit_action)
 
         self.setContextMenu(menu)
+        self.activated.connect(self._on_activated)
+
+    def _on_activated(self, reason):
+        # Trigger = single click with the primary (left) button
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.primary_clicked.emit()
 
     def _update_tooltip(self, recording: bool):
         status = "Recording..." if recording else "Idle"

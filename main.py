@@ -34,6 +34,8 @@ class App(QObject):
         self._fallback_mode = False   # realtime failed, mic still running for offline
         self._offline_running = False  # offline API call in flight
         self._chars_typed = 0
+        self._session_text = ""  # text of the current/last recording session
+        self._last_text = ""     # last completed session's text
 
         # Components
         self._audio = AudioCapture()
@@ -57,6 +59,7 @@ class App(QObject):
         self._transcription.finished.connect(self._on_transcription_finished)
         self._tray.settings_requested.connect(self._open_settings)
         self._tray.logs_requested.connect(self._log_viewer.show_and_raise)
+        self._tray.copy_last_text_requested.connect(self._copy_last_text)
         self._tray.offline_mode_toggled.connect(self._on_offline_mode_toggled)
         self._tray.quit_requested.connect(QApplication.quit)
 
@@ -85,6 +88,7 @@ class App(QObject):
         self._recording = True
         self._offline_running = False
         self._chars_typed = 0
+        self._session_text = ""
         _windir = os.environ.get("WINDIR", r"C:\Windows")
         winsound.PlaySound(os.path.join(_windir, "Media", "Speech On.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._audio.start()
@@ -129,6 +133,9 @@ class App(QObject):
         self._transcription.stop()
         self._tray.set_recording(False)
 
+        if self._session_text:
+            self._last_text = self._session_text
+
         if self._chars_typed > 0:
             self._overlay.show_status("Done", auto_hide_ms=1500)
         else:
@@ -141,10 +148,22 @@ class App(QObject):
         self._offline_running = False
         self._tray.set_recording(False)
 
+        if self._session_text:
+            self._last_text = self._session_text
+
         if self._chars_typed > 0:
             self._overlay.show_status("Done", auto_hide_ms=1500)
         else:
             self._overlay.show_status("No speech detected", auto_hide_ms=1500)
+
+    @Slot()
+    def _copy_last_text(self):
+        if self._last_text:
+            QApplication.clipboard().setText(self._last_text)
+            self._overlay.show_status(f"Copied {len(self._last_text)} chars", auto_hide_ms=1500)
+            log_buffer.log(f"copied last text to clipboard ({len(self._last_text)} chars)")
+        else:
+            self._overlay.show_status("Nothing to copy yet", auto_hide_ms=1500)
 
     @Slot(str)
     def _on_text_delta(self, delta: str):
@@ -155,6 +174,7 @@ class App(QObject):
             import transcription
             log_buffer.log(f"[{time.perf_counter() - transcription._t0:+.3f}s] first type_text() call: {delta!r}")
         self._chars_typed += len(delta)
+        self._session_text += delta
         type_text(delta, mode=self._config.get("typing_mode", "paste"),
                   paste_shortcut=self._config.get("paste_shortcut", "shift_insert"))
 
