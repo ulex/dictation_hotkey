@@ -12,9 +12,10 @@ use windows_sys::Win32::{
     System::{
         DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
         Memory::{GlobalLock, GlobalUnlock},
+        Threading::{AttachThreadInput, GetCurrentThreadId},
     },
     UI::{
-        Input::KeyboardAndMouse::{SetFocus, INPUT},
+        Input::KeyboardAndMouse::{GetFocus, SetFocus, INPUT},
         WindowsAndMessaging::*,
     },
 };
@@ -53,9 +54,11 @@ fn unicode_clipboard_and_input_layout() {
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         let class = w("DictationInputTestTarget");
-        let mut wc = WNDCLASSW::default();
-        wc.lpszClassName = class.as_ptr();
-        wc.lpfnWndProc = Some(target_proc);
+        let wc = WNDCLASSW {
+            lpszClassName: class.as_ptr(),
+            lpfnWndProc: Some(target_proc),
+            ..Default::default()
+        };
         RegisterClassW(&wc);
         let parent = Window(CreateWindowExW(
             0,
@@ -76,7 +79,7 @@ fn unicode_clipboard_and_input_layout() {
             0,
             w("EDIT").as_ptr(),
             w("").as_ptr(),
-            WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+            WS_VISIBLE | WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL as u32,
             10,
             10,
             450,
@@ -86,9 +89,24 @@ fn unicode_clipboard_and_input_layout() {
             null_mut(),
             null(),
         );
+        assert!(!edit.is_null());
+        // A background cargo invocation may not own foreground activation rights.
+        // Attach only while activating this controlled target, never in app output code.
+        let current = GetCurrentThreadId();
+        let foreground = GetWindowThreadProcessId(GetForegroundWindow(), null_mut());
+        let attached = foreground != current && AttachThreadInput(current, foreground, 1) != 0;
         SetForegroundWindow(parent.0);
         SetFocus(edit);
+        if attached {
+            AttachThreadInput(current, foreground, 0);
+        }
         pump();
+        assert_eq!(
+            GetForegroundWindow(),
+            parent.0,
+            "controlled target must be foreground before injecting input"
+        );
+        assert_eq!(GetFocus(), edit, "controlled EDIT must have keyboard focus");
         let text = "Dictation 😀 𝄞 café\r\n";
         output::copy(parent.0, text).unwrap();
         output::copy(parent.0, "").unwrap(); // an empty session must not replace/copy a prior result
@@ -100,22 +118,37 @@ fn unicode_clipboard_and_input_layout() {
         assert_eq!(std::slice::from_raw_parts(ptr, expected.len()), &expected);
         GlobalUnlock(mem);
         CloseClipboard();
-        let text = "Hello 😀 𝄞 café";
-        output::type_text(parent.0, text, "keystrokes", "shift_insert").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut actual = [0u16; 256];
-        loop {
-            pump();
-            let count = GetWindowTextW(edit, actual.as_mut_ptr(), actual.len() as i32);
-            if String::from_utf16_lossy(&actual[..count as usize]) == text {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Unicode text did not reach controlled EDIT target; controlled value: {:?}",
-                String::from_utf16_lossy(&actual[..count as usize])
+        // Cross the keystroke batching boundary and include surrogate pairs.
+        let text = "Hello 😀 𝄞 café ".repeat(17);
+        for (mode, shortcut) in [
+            ("keystrokes", "shift_insert"),
+            ("paste", "shift_insert"),
+            ("paste", "ctrl_v"),
+        ] {
+            SetWindowTextW(edit, w("").as_ptr());
+            assert_eq!(GetForegroundWindow(), parent.0);
+            assert_eq!(GetFocus(), edit);
+            let sending = Instant::now();
+            output::type_text(parent.0, &text, mode, shortcut).unwrap();
+            eprintln!(
+                "{mode}/{shortcut} SendInput elapsed: {:?}",
+                sending.elapsed()
             );
-            std::thread::sleep(Duration::from_millis(10));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut actual = vec![0u16; text.encode_utf16().count() + 1];
+            loop {
+                pump();
+                let count = GetWindowTextW(edit, actual.as_mut_ptr(), actual.len() as i32);
+                if String::from_utf16_lossy(&actual[..count as usize]) == text {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{mode}/{shortcut} did not reach controlled EDIT target; controlled value: {:?}",
+                    String::from_utf16_lossy(&actual[..count as usize])
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 }

@@ -59,12 +59,16 @@ pub fn parse(text: &str) -> Option<Hotkey> {
 pub enum Action {
     Toggle,
     Stop,
+    /// Replace this Win-key release with a masked, tagged release so the shell
+    /// does not interpret a swallowed Win shortcut as a bare Win tap.
+    MaskWindowsRelease,
 }
 /// Allocation-free key-repeat/suppressed-up tracking for the low-level hook.
 pub struct Matcher {
     suppressed: [bool; 256],
     pressed: [bool; 256],
     escape: bool,
+    mask_start: bool,
 }
 impl Default for Matcher {
     fn default() -> Self {
@@ -72,10 +76,21 @@ impl Default for Matcher {
             suppressed: [false; 256],
             pressed: [false; 256],
             escape: false,
+            mask_start: false,
         }
     }
 }
 impl Matcher {
+    /// Hook events are delivered before Windows updates asynchronous key state.
+    /// Track both sides of every modifier rather than querying GetAsyncKeyState
+    /// inside the hook (which is also unreliable for a burst of injected keys).
+    pub fn modifiers(&self) -> u32 {
+        let held = |keys: &[usize]| keys.iter().any(|&vk| self.pressed[vk]);
+        u32::from(held(&[0x12, 0xa4, 0xa5]))
+            | (u32::from(held(&[0x11, 0xa2, 0xa3])) << 1)
+            | (u32::from(held(&[0x10, 0xa0, 0xa1])) << 2)
+            | (u32::from(held(&[0x5b, 0x5c])) << 3)
+    }
     #[allow(clippy::too_many_arguments)] // scalar-only hook inputs, no allocations
     pub fn event(
         &mut self,
@@ -101,6 +116,10 @@ impl Matcher {
         }
         let was_down = self.pressed[vk as usize];
         self.pressed[vk as usize] = down;
+        if !down && matches!(vk, 0x5b | 0x5c) && self.mask_start {
+            self.mask_start = self.pressed[0x5b] || self.pressed[0x5c];
+            return (true, Some(Action::MaskWindowsRelease));
+        }
         let held = &mut self.suppressed[vk as usize];
         if *held {
             if !down {
@@ -113,6 +132,7 @@ impl Matcher {
                 && ((vk == 0x43 && modifiers == WIN) || (vk == 0x86 && modifiers == WIN | SHIFT)));
         if down && !was_down && matches {
             *held = true;
+            self.mask_start = true;
             (true, Some(Action::Toggle))
         } else {
             (false, None)
@@ -169,6 +189,64 @@ mod tests {
             m.event(0x86, true, false, WIN | SHIFT, false, true, true),
             (true, Some(Action::Toggle))
         );
+    }
+    fn hook_event(m: &mut Matcher, vk: u32, down: bool) -> (bool, Option<Action>) {
+        let modifiers = m.modifiers();
+        m.event(vk, down, false, modifiers, true, true, false)
+    }
+    #[test]
+    fn intercepted_chords_mask_both_win_keys_and_release_orders() {
+        for win in [0x5b, 0x5c] {
+            for win_first in [false, true] {
+                let mut m = Matcher::default();
+                assert_eq!(hook_event(&mut m, win, true), (false, None));
+                assert_eq!(m.modifiers(), WIN);
+                assert_eq!(hook_event(&mut m, 0x48, true), (true, Some(Action::Toggle)));
+                assert_eq!(hook_event(&mut m, 0x48, true), (true, None));
+                if !win_first {
+                    assert_eq!(hook_event(&mut m, 0x48, false), (true, None));
+                }
+                assert_eq!(
+                    hook_event(&mut m, win, false),
+                    (true, Some(Action::MaskWindowsRelease))
+                );
+                assert_eq!(m.modifiers(), 0);
+                // The reinjected release cannot recurse into masking.
+                assert_eq!(
+                    m.event(win, false, true, 0, true, true, false),
+                    (false, None)
+                );
+                if win_first {
+                    assert_eq!(hook_event(&mut m, 0x48, false), (true, None));
+                }
+                // Subsequent bare Win taps must still work normally.
+                assert_eq!(hook_event(&mut m, win, true), (false, None));
+                assert_eq!(hook_event(&mut m, win, false), (false, None));
+            }
+        }
+    }
+    #[test]
+    fn hook_tracks_sided_modifiers_and_does_not_intercept_extra_modifiers() {
+        let mut m = Matcher::default();
+        hook_event(&mut m, 0x5b, true);
+        hook_event(&mut m, 0xa3, true); // right Ctrl
+        assert_eq!(m.modifiers(), WIN | CTRL);
+        assert_eq!(hook_event(&mut m, 0x48, true), (false, None));
+        hook_event(&mut m, 0xa3, false);
+        assert_eq!(hook_event(&mut m, 0x48, true), (false, None));
+        hook_event(&mut m, 0x48, false);
+        hook_event(&mut m, 0x5b, false);
+        assert_eq!(m.modifiers(), 0);
+        hook_event(&mut m, 0x5c, true);
+        hook_event(&mut m, 0xa0, true); // left Shift (physical Copilot chord)
+        assert_eq!(m.modifiers(), WIN | SHIFT);
+        assert_eq!(hook_event(&mut m, 0x86, true), (true, Some(Action::Toggle)));
+        hook_event(&mut m, 0xa0, false);
+        assert_eq!(
+            hook_event(&mut m, 0x5c, false),
+            (true, Some(Action::MaskWindowsRelease))
+        );
+        assert_eq!(hook_event(&mut m, 0x86, false), (true, None));
     }
     #[test]
     fn valid_aliases() {

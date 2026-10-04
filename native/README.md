@@ -16,7 +16,16 @@ Windows 10/11 x64 native rewrite of Dictation Hotkey. The native app keeps the e
 
 ## Build/test
 
-On Windows with Rust 1.99, MSVC Build Tools, and a Windows SDK:
+On Windows, install MSVC Build Tools with the C++ tools and Windows SDK, then Rust 1.99.0 (including Clippy and rustfmt):
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --accept-source-agreements --accept-package-agreements --silent --override '--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
+winget install --id Rustlang.Rustup --exact --source winget
+# Open a new terminal so Cargo is on PATH.
+rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+```
+
+Build and run the non-interactive tests:
 
 ```powershell
 cd native
@@ -47,4 +56,38 @@ Package it as `DictationHotkey.exe` for distribution.
 
 ## Validation status
 
-The portable core has automated tests for config migration, hotkey parsing, bounded queues, session state, protocol parsing/framing, WAV spooling, multipart sizing, and output edge cases. This repository build can compile/check the Windows code from Linux, but microphone behavior, global hotkey interception, WinHTTP service compatibility, RDP/target-app input behavior, memory budgets, and clean-machine runtime behavior still need Windows smoke/performance runs before broad publication.
+The portable core has automated tests for config migration, hotkey parsing, bounded queues, session state, protocol parsing/framing, WAV spooling, multipart sizing, and output edge cases. Windows build and smoke-test results are recorded in [`../benchmarks/WINDOWS_VALIDATION.md`](../benchmarks/WINDOWS_VALIDATION.md), with raw idle measurements under `../benchmarks/windows/`.
+
+Opt-in tests (run from `native/`):
+
+```powershell
+# Close the app first. Use an unlocked desktop and a foreground terminal.
+# This launches windows, changes the clipboard, and injects text into a test EDIT.
+cargo test --locked --test windows -- --ignored --test-threads=1
+
+# Optional: exercise the packaged release instead of the debug app shell.
+$env:DICTATION_TEST_EXE = (Resolve-Path dist/DictationHotkey.exe).Path
+cargo test --locked --test windows app_shell -- --ignored --test-threads=1
+Remove-Item Env:DICTATION_TEST_EXE
+
+# Shell-level Win+H regression: requires an English unlocked foreground desktop,
+# Win+H enabled, empty API key, and no running app. Opens Start as a control,
+# then checks both Win keys/release orders trigger Settings without opening Start.
+cargo test --locked --test windows_hotkey -- --ignored --test-threads=1
+
+# Simulated one-hour WAV spool (115.2 MB, deleted after the test).
+cargo test --locked --lib -- --ignored --test-threads=1
+
+# Opens the default microphone for two seconds; counts/discards audio, no upload.
+cargo test --locked --test windows_io wasapi -- --ignored --nocapture
+
+# Contacts Mistral with an invalid key and synthetic silence; no real audio/key needed.
+cargo test --locked --test windows_io winhttp -- --ignored --nocapture
+
+# Launch release, dismiss first-run Settings without saving, sample idle, quit.
+powershell -NoProfile -ExecutionPolicy Bypass -File ../tools/measure-native-idle.ps1
+```
+
+Desktop input tests assert that the controlled window is foreground before injecting text. A background agent shell, locked desktop, or elevated foreground application can prevent activation; run them from a foreground PowerShell window rather than bypassing Windows input security.
+
+The Win+H shell-level regression now passes against the patched release (the original build reproduces unwanted Start activation). Successful microphone capture, authenticated realtime/batch transcription, physical-key recording toggles (Win+H/Copilot/custom), Escape/overlay stopping, fallback after partial insertion, target-app/RDP behavior, active-session resource budgets, and clean-machine runtime behavior still need validation before broad publication. The Windows session used for the recorded run had no default microphone capture endpoint and no Mistral API key.

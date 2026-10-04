@@ -1,0 +1,18 @@
+﻿
+running 1 test
+test win_h_triggers_app_without_start_menu_or_leaked_h ... FAILED
+
+failures:
+
+---- win_h_triggers_app_without_start_menu_or_leaked_h stdout ----
+
+thread 'win_h_triggers_app_without_start_menu_or_leaked_h' (7308) panicked at tests\windows_hotkey.rs:221:21:
+intercepted Win+H opened Start
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    win_h_triggers_app_without_start_menu_or_leaked_h
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+

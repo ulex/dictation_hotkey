@@ -36,9 +36,7 @@ mod app {
         },
         System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
         UI::{
-            Input::KeyboardAndMouse::{
-                GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT,
-            },
+            Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT},
             Shell::*,
             WindowsAndMessaging::*,
         },
@@ -94,13 +92,10 @@ mod app {
         {
             let key = &*(lp as *const KBDLLHOOKSTRUCT);
             let down = wp as u32 == WM_KEYDOWN || wp as u32 == WM_SYSKEYDOWN;
-            let pressed = |vk| GetAsyncKeyState(vk) < 0;
-            let modifiers = u32::from(pressed(0x12))
-                | (u32::from(pressed(0x11)) << 1)
-                | (u32::from(pressed(0x10)) << 2)
-                | (u32::from(pressed(0x5b) || pressed(0x5c)) << 3);
             let (suppress, action) = MATCHER.with(|cell| {
-                cell.borrow_mut().event(
+                let mut matcher = cell.borrow_mut();
+                let modifiers = matcher.modifiers();
+                matcher.event(
                     key.vkCode,
                     down,
                     key.dwExtraInfo == output::MARK,
@@ -110,6 +105,15 @@ mod app {
                     ACTIVE.load(Ordering::Acquire),
                 )
             });
+            if action == Some(Action::MaskWindowsRelease) {
+                // Swallow the original release only if its replacement was queued.
+                // The replacement puts an unused key before Win-up in one batch;
+                // injecting a mask then forwarding the original up races the shell.
+                if output::mask_windows_release(key.vkCode as u16, key.scanCode as u16).is_ok() {
+                    return 1;
+                }
+                return CallNextHookEx(null_mut(), code, wp, lp);
+            }
             if let Some(action) = action {
                 if !DIALOG.load(Ordering::Relaxed) {
                     PostMessageW(

@@ -63,6 +63,22 @@ fn send(events: &[INPUT]) -> io::Result<()> {
     }
     Ok(())
 }
+/// Called only for a Win-up following an intercepted reserved shortcut. Windows
+/// otherwise sees Win-down/Win-up without H/C/F23 and opens Start. VK 0xE8 is
+/// unassigned: it masks the shell's menu activation without typing text or
+/// disturbing a user's held Ctrl/Alt/Shift keys. All three events are tagged so
+/// our hook passes them through without recursion or changing physical state.
+pub fn mask_windows_release(vk: u16, scan: u16) -> io::Result<()> {
+    if !matches!(vk, 0x5b | 0x5c) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a Win key"));
+    }
+    send(&[
+        key(0xe8, 0, 0),
+        key(0xe8, 0, KEYEVENTF_KEYUP),
+        key(vk, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
+    ])
+}
+
 // HWND is supplied by the controller's live UI window; clipboard APIs do not retain it.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn copy(hwnd: HWND, text: &str) -> io::Result<()> {
