@@ -30,4 +30,8 @@ pub mod settings_ui;
 pub mod spool;
 #[cfg(windows)]
 pub mod startup;
+#[cfg(windows)]
+mod ui;
+#[cfg(windows)]
+mod ui_font;
 pub mod wire;

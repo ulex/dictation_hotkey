@@ -6,12 +6,10 @@ fn icons_contain_native_size_png_frames() {
         include_bytes!("../resources/tray-recording.ico").as_slice(),
         include_bytes!("../resources/tray-processing.ico").as_slice(),
     ] {
-        assert_eq!(&data[..6], &[0, 0, 1, 0, 9, 0]);
-        let mut previous_end = 6 + 9 * 16;
-        for (index, size) in [16u32, 20, 24, 32, 40, 48, 64, 128, 256]
-            .into_iter()
-            .enumerate()
-        {
+        assert_eq!(&data[..6], &[0, 0, 1, 0, 7, 0]);
+        assert!(data.len() < 8 * 1024, "keep status icons compact");
+        let mut previous_end = 6 + 7 * 16;
+        for (index, size) in [16u32, 20, 24, 32, 40, 48, 64].into_iter().enumerate() {
             let entry = &data[6 + index * 16..6 + (index + 1) * 16];
             let dimension = if size == 256 { 0 } else { size as u8 };
             assert_eq!(&entry[..4], &[dimension, dimension, 0, 0]);

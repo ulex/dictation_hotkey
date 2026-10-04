@@ -56,13 +56,19 @@ Package it as `DictationHotkey.exe` for distribution. Python and Qt are not requ
 
 ## Icon assets
 
-`resources/tray-*.ico` contain antialiased microphone artwork rendered independently at 16, 20, 24, 32, 40, 48, 64, 128, and 256 pixels. The tray loads the DPI-appropriate small-icon size. Blue is idle, red is recording, and purple is processing; there is no exclamation-mark badge.
+`resources/tray-*.ico` keep the original status-ball design: green is idle, red is recording, and amber is processing, without a center symbol or exclamation mark. Each compact PNG-based ICO contains antialiased 16, 20, 24, 32, 40, 48, and 64 pixel frames. Large 128/256 pixel frames are deliberately omitted to keep the executable small; resource tests enforce a per-icon size budget. The tray loads the DPI-appropriate small-icon size.
 
 Regenerate the assets on Windows (no additional packages required):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-icons.ps1
 ```
+
+## Native UI styling
+
+Settings and Logs use Windows common-controls v6 visual styles, DPI-scaled Segoe UI typography, system-color surfaces, consistent spacing, and native keyboard navigation. Settings separates General and Transcription options with a native tab control; validation uses a native task dialog. Logs use a padded, read-only Consolas text area. The nonactivating recording overlay has a rounded silhouette, a smoothed status ball, and a visible Stop affordance. Fonts are owned per window and released after child controls are destroyed.
+
+Windows 11 rounded window frames are requested on a best-effort basis; Windows 10 keeps its standard frame. No web view, WinUI, custom control framework, or runtime asset package is required. System high-contrast colors remain supported. Manual visual checks at different DPI levels, tab/keyboard navigation, and high-contrast checks are still required; interactive tests must be run explicitly on an unlocked desktop.
 
 ## Validation status
 

@@ -972,8 +972,10 @@ mod app {
                 if result <= 0 {
                     break;
                 }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+                if !logs_ui::dialog_message(&msg) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
             APP.with(|cell| {
                 cell.borrow_mut().take();

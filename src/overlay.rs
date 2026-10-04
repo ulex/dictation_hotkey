@@ -1,37 +1,49 @@
-//! Nonactivating, layered status popup; timers exist only while visible.
+//! Nonactivating, rounded native status popup; timers exist only while visible.
+use crate::ui;
 use std::{
     cell::Cell,
-    mem::zeroed,
+    mem::{size_of, zeroed},
     ptr::{null, null_mut},
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
-    UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    UI::WindowsAndMessaging::*,
 };
 pub const STOP_MESSAGE: u32 = WM_APP + 4;
 thread_local! { static RECORDING: Cell<bool> = const { Cell::new(false) }; static PULSE: Cell<bool> = const { Cell::new(false) }; }
-fn w(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
+use ui::w;
+unsafe fn round_region(hwnd: HWND) {
+    let mut rect: RECT = zeroed();
+    GetClientRect(hwnd, &mut rect);
+    let radius = ui::scale(hwnd, 24);
+    let region = CreateRoundRectRgn(0, 0, rect.right + 1, rect.bottom + 1, radius, radius);
+    if !region.is_null() && SetWindowRgn(hwnd, region, 1) == 0 {
+        DeleteObject(region);
+    }
+    // Windows owns a successfully assigned region.
 }
 unsafe fn position(hwnd: HWND) {
-    let mut work: RECT = zeroed();
-    if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as _, 0) == 0 {
+    let monitor = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+    let mut info: MONITORINFO = zeroed();
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    if GetMonitorInfoW(monitor, &mut info) == 0 {
         return;
     }
-    let dpi = GetDpiForWindow(hwnd).max(96);
-    let width = (560 * dpi / 96) as i32;
-    let height = (56 * dpi / 96) as i32;
+    let work = info.rcWork;
+    let width = ui::scale(hwnd, 560).min(work.right - work.left);
+    let height = ui::scale(hwnd, 64);
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
         work.left + (work.right - work.left - width) / 2,
-        work.bottom - height - (28 * dpi / 96) as i32,
+        work.bottom - height - ui::scale(hwnd, 24),
         width,
         height,
         SWP_NOACTIVATE,
     );
+    round_region(hwnd);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
@@ -50,52 +62,134 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             KillTimer(hwnd, 2);
             0
         }
-        WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {
+        WM_DPICHANGED => {
+            ui::dpi_changed(hwnd, lp);
             position(hwnd);
             0
         }
+        WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+            SetLayeredWindowAttributes(
+                hwnd,
+                0,
+                if ui::high_contrast() { 255 } else { 248 },
+                LWA_ALPHA,
+            );
+            position(hwnd);
+            InvalidateRect(hwnd, null(), 0);
+            0
+        }
+        WM_SIZE => {
+            round_region(hwnd);
+            0
+        }
+        WM_ERASEBKGND => 1,
         WM_PAINT => {
             let mut paint: PAINTSTRUCT = zeroed();
             let dc = BeginPaint(hwnd, &mut paint);
             let mut rect: RECT = zeroed();
             GetClientRect(hwnd, &mut rect);
-            let brush = CreateSolidBrush(0x00262626);
+            let contrast = ui::high_contrast();
+            let brush = CreateSolidBrush(if contrast {
+                GetSysColor(COLOR_WINDOW)
+            } else {
+                0x00282422
+            });
             FillRect(dc, &rect, brush);
             DeleteObject(brush);
-            let font = GetStockObject(DEFAULT_GUI_FONT);
+            let font = ui::theme(hwnd)
+                .map(|t| t.body_font())
+                .unwrap_or_else(|| GetStockObject(DEFAULT_GUI_FONT));
             let previous = SelectObject(dc, font);
             SetBkMode(dc, TRANSPARENT as i32);
-            SetTextColor(dc, 0x00FFFFFF);
+            SetTextColor(
+                dc,
+                if contrast {
+                    GetSysColor(COLOR_WINDOWTEXT)
+                } else {
+                    0x00FAFAFA
+                },
+            );
             let mut text = [0u16; 512];
             let count = GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32);
             let recording = RECORDING.with(Cell::get);
             if recording {
-                let size = (18 * GetDpiForWindow(hwnd).max(96) / 96) as i32;
-                let brush = CreateSolidBrush(if PULSE.with(Cell::get) {
-                    0x004848EE
+                // Reuse the smoothed ball asset instead of a jagged GDI ellipse.
+                let size = ui::scale(hwnd, if PULSE.with(Cell::get) { 18 } else { 16 });
+                let icon = LoadImageW(
+                    GetModuleHandleW(null()),
+                    102usize as _,
+                    IMAGE_ICON,
+                    size,
+                    size,
+                    LR_DEFAULTCOLOR,
+                );
+                if !icon.is_null() {
+                    DrawIconEx(
+                        dc,
+                        ui::scale(hwnd, 18),
+                        (rect.bottom - size) / 2,
+                        icon,
+                        size,
+                        size,
+                        0,
+                        null_mut(),
+                        DI_NORMAL,
+                    );
+                    DestroyIcon(icon);
+                }
+                let mut stop_rect = rect;
+                stop_rect.left = rect.right - ui::scale(hwnd, 92);
+                stop_rect.right -= ui::scale(hwnd, 16);
+                stop_rect.top = ui::scale(hwnd, 16);
+                stop_rect.bottom -= ui::scale(hwnd, 16);
+                let stop_brush = CreateSolidBrush(if contrast {
+                    GetSysColor(COLOR_BTNFACE)
                 } else {
-                    0x006E6EEE
+                    0x00443E3A
                 });
-                let previous_brush = SelectObject(dc, brush);
-                Ellipse(
+                let previous_brush = SelectObject(dc, stop_brush);
+                let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                RoundRect(
                     dc,
-                    12,
-                    (rect.bottom - size) / 2,
-                    12 + size,
-                    (rect.bottom + size) / 2,
+                    stop_rect.left,
+                    stop_rect.top,
+                    stop_rect.right,
+                    stop_rect.bottom,
+                    ui::scale(hwnd, 12),
+                    ui::scale(hwnd, 12),
                 );
                 SelectObject(dc, previous_brush);
-                DeleteObject(brush);
-                rect.left += 36;
+                SelectObject(dc, previous_pen);
+                DeleteObject(stop_brush);
+                if contrast {
+                    SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+                }
+                DrawTextW(
+                    dc,
+                    w("Stop").as_ptr(),
+                    -1,
+                    &mut stop_rect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                if contrast {
+                    SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+                }
+                rect.left += ui::scale(hwnd, 52);
+                rect.right -= ui::scale(hwnd, 108);
+            } else {
+                rect.left += ui::scale(hwnd, 24);
+                rect.right -= ui::scale(hwnd, 24);
             }
-            rect.left += 10;
-            rect.right -= 10;
             DrawTextW(
                 dc,
                 text.as_ptr(),
                 count,
                 &mut rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                DT_VCENTER
+                    | DT_SINGLELINE
+                    | DT_END_ELLIPSIS
+                    | DT_NOPREFIX
+                    | if recording { DT_LEFT } else { DT_CENTER },
             );
             SelectObject(dc, previous);
             EndPaint(hwnd, &paint);
@@ -105,6 +199,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 2);
             0
+        }
+        WM_NCDESTROY => {
+            ui::detach(hwnd);
+            DefWindowProcW(hwnd, msg, wp, lp)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
@@ -132,7 +230,7 @@ impl Overlay {
                 0,
                 0,
                 560,
-                56,
+                64,
                 parent,
                 null_mut(),
                 instance,
@@ -141,7 +239,13 @@ impl Overlay {
             if hwnd.is_null() {
                 return Err("create status overlay failed".into());
             }
-            SetLayeredWindowAttributes(hwnd, 0, 242, LWA_ALPHA);
+            ui::attach(hwnd, false);
+            SetLayeredWindowAttributes(
+                hwnd,
+                0,
+                if ui::high_contrast() { 255 } else { 248 },
+                LWA_ALPHA,
+            );
             position(hwnd);
             Ok(Self { hwnd })
         }

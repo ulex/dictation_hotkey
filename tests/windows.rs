@@ -18,6 +18,7 @@ use windows_sys::Win32::{
         Threading::{AttachThreadInput, GetCurrentThreadId},
     },
     UI::{
+        Controls::TCM_GETITEMCOUNT,
         Input::KeyboardAndMouse::{GetFocus, SetFocus, INPUT},
         WindowsAndMessaging::*,
     },
@@ -298,6 +299,24 @@ fn app_shell_settings_logs_single_instance_and_shutdown() {
             GetWindowLongPtrW(GetDlgItem(settings, 100), GWL_STYLE) & ES_PASSWORD as isize,
             ES_PASSWORD as isize
         );
+        let tabs = GetDlgItem(settings, 600);
+        assert!(!tabs.is_null(), "native settings tabs exist");
+        assert_eq!(SendMessageW(tabs, TCM_GETITEMCOUNT, 0, 0), 2);
+        let body_font = SendMessageW(GetDlgItem(settings, 100), WM_GETFONT, 0, 0);
+        let title_font = SendMessageW(GetDlgItem(settings, 900), WM_GETFONT, 0, 0);
+        assert_ne!(body_font, 0, "DPI-scaled body font is assigned");
+        assert_ne!(title_font, body_font, "title has distinct typography");
+        assert_eq!(
+            GetNextDlgTabItem(settings, GetDlgItem(settings, 100), 0),
+            GetDlgItem(settings, 101),
+            "Tab follows the visual field order"
+        );
+        assert_ne!(IsWindowVisible(GetDlgItem(settings, 100)), 0);
+        assert_eq!(
+            IsWindowVisible(GetDlgItem(settings, 103)),
+            0,
+            "connection fields start on the second page"
+        );
         PostMessageW(settings, WM_CLOSE, 0, 0);
         let deadline = Instant::now() + Duration::from_secs(10);
         while IsWindow(settings) != 0 {
@@ -310,6 +329,13 @@ fn app_shell_settings_logs_single_instance_and_shutdown() {
             assert!(Instant::now() < deadline, "Logs failed to open");
             std::thread::sleep(Duration::from_millis(50));
         }
+        let logs = FindWindowW(w("DictationHotkeyLogs").as_ptr(), null());
+        assert!(!GetDlgItem(logs, 900).is_null(), "Logs has a title header");
+        assert_ne!(SendMessageW(GetDlgItem(logs, 100), WM_GETFONT, 0, 0), 0);
+        assert_ne!(
+            GetWindowLongPtrW(GetDlgItem(logs, 100), GWL_STYLE) & ES_READONLY as isize,
+            0
+        );
         PostMessageW(controller, WM_COMMAND, 5, 0); // coordinated Quit
     }
     let deadline = Instant::now() + Duration::from_secs(10);
