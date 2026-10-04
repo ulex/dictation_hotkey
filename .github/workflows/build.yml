@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  build:
+  python-legacy:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,16 +19,62 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
-      - name: Build exe
-        run: pyinstaller dictation_hotkey.spec
+      - name: Build legacy Python exe
+        run: |
+          pyinstaller dictation_hotkey.spec
+          Rename-Item dist\DictationHotkey.exe DictationHotkey-python-legacy.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DictationHotkey
-          path: dist/DictationHotkey.exe
+          name: DictationHotkey-Python-Legacy
+          path: dist/DictationHotkey-python-legacy.exe
 
+  native-release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+      - name: Format and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Test on Windows
+        run: cargo test --locked
+      - name: Build MSVC release
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Package release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = 'target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe'
+          Copy-Item $exe dist/DictationHotkey.exe
+          Compress-Archive -Force dist/DictationHotkey.exe dist/DictationHotkey-win64.zip
+          Get-ChildItem dist/DictationHotkey.exe, dist/DictationHotkey-win64.zip |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content dist/SHA256SUMS.txt
+          Write-Host "EXE bytes: $((Get-Item dist/DictationHotkey.exe).Length)"
+          Write-Host "ZIP bytes: $((Get-Item dist/DictationHotkey-win64.zip).Length)"
+          Get-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictationHotkey-Native-Release
+          path: |
+            native/dist/DictationHotkey.exe
+            native/dist/DictationHotkey-win64.zip
+            native/dist/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
-          files: dist/DictationHotkey.exe
+          files: |
+            native/dist/DictationHotkey.exe
+            native/dist/DictationHotkey-win64.zip
+            native/dist/SHA256SUMS.txt
           token: ${{ secrets.PUB_TOKEN }}

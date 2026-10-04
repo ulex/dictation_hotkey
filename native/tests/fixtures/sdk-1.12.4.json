@@ -1,0 +1,8 @@
+{
+  "sdk_version": "1.12.4",
+  "session_update": {"session": {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}}, "type": "session.update"},
+  "append": {"audio": "AAECAw==", "type": "input_audio.append"},
+  "flush": {"type": "input_audio.flush"},
+  "end": {"type": "input_audio.end"},
+  "delta": {"text": "Fixture 😀", "type": "transcription.text.delta"}
+}
