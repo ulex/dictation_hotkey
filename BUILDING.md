@@ -12,7 +12,7 @@ Windows 10/11 x64 Rust implementation of Dictation Hotkey. This is the only appl
 - Mistral realtime WebSocket adapter over WinHTTP with SDK-equivalent warmup, audio append, flush/end, bounded receive parsing, and graceful finalization.
 - Mistral batch upload over WinHTTP using streamed multipart WAV upload.
 - Safe fallback policy: before any inserted realtime text, batch fallback can insert/copy the complete result; after partial insertion, the complete batch result is retained for Copy Last Text but is not automatically inserted to avoid duplicates.
-- Clipboard paste and Unicode keystroke output with tagged injected events and bounded pacing.
+- Clipboard paste and Unicode keystroke output with tagged injected events and bounded pacing. Paste snapshots the original clipboard formats and restores them on a UI timer after 300 ms; newer clipboard changes are never overwritten. Copy Last Text intentionally replaces the clipboard. Clipboard preservation is capped at 256 formats / 64 MiB; unsupported private formats fail without replacing the clipboard (use keystroke output instead). Very slow or remote targets may consume paste after the restoration delay and need keystroke output.
 
 ## Build/test
 
@@ -53,6 +53,16 @@ target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
 Package it as `DictationHotkey.exe` for distribution. Python and Qt are not required to build or run it.
 
 `tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
+
+## Icon assets
+
+`resources/tray-*.ico` contain antialiased microphone artwork rendered independently at 16, 20, 24, 32, 40, 48, 64, 128, and 256 pixels. The tray loads the DPI-appropriate small-icon size. Blue is idle, red is recording, and purple is processing; there is no exclamation-mark badge.
+
+Regenerate the assets on Windows (no additional packages required):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-icons.ps1
+```
 
 ## Validation status
 

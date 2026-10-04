@@ -8,6 +8,7 @@ fn main() {
 mod app {
     use dictation_hotkey_native::{
         bounded::Queue,
+        clipboard,
         config::Config,
         hotkey::{self, Action, Matcher},
         logs_ui, output,
@@ -36,6 +37,7 @@ mod app {
         },
         System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
         UI::{
+            HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
             Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT},
             Shell::*,
             WindowsAndMessaging::*,
@@ -164,7 +166,15 @@ mod app {
             data.uID = 1;
             data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             data.uCallbackMessage = TRAY;
-            data.hIcon = LoadIconW(GetModuleHandleW(null()), state as usize as _);
+            let dpi = GetDpiForWindow(hwnd);
+            data.hIcon = LoadImageW(
+                GetModuleHandleW(null()),
+                state as usize as _,
+                IMAGE_ICON,
+                GetSystemMetricsForDpi(SM_CXSMICON, dpi),
+                GetSystemMetricsForDpi(SM_CYSMICON, dpi),
+                LR_DEFAULTCOLOR,
+            );
             let text: Vec<u16> = status.encode_utf16().take(126).collect();
             data.szTip[..text.len()].copy_from_slice(&text);
             if text.last().is_some_and(|c| (0xD800..=0xDBFF).contains(c)) {
@@ -172,6 +182,9 @@ mod app {
             }
             if Shell_NotifyIconW(operation, &data) == 0 && operation == NIM_ADD {
                 logs_ui::log("Tray icon creation failed");
+            }
+            if !data.hIcon.is_null() {
+                DestroyIcon(data.hIcon);
             }
         }
     }
@@ -717,6 +730,14 @@ mod app {
                 with_app(App::tick);
                 0
             }
+            WM_TIMER if wp == clipboard::RESTORE_TIMER => {
+                if let Err(error) = clipboard::restore(hwnd) {
+                    if error.kind() != io::ErrorKind::WouldBlock {
+                        logs_ui::log("Clipboard restoration failed; retrying");
+                    }
+                }
+                0
+            }
             WM_COMMAND if wp & 0xffff == SETTINGS => {
                 if DIALOG.load(Ordering::Relaxed) {
                     return 0;
@@ -789,6 +810,7 @@ mod app {
                 0
             }
             WM_DESTROY => {
+                let _ = clipboard::restore(hwnd);
                 with_app(|app| {
                     if !app.hook.is_null() {
                         UnhookWindowsHookEx(app.hook);

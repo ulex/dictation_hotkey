@@ -1,7 +1,7 @@
 #![cfg(windows)]
 //! Desktop integration tests. Run explicitly on an unlocked Windows desktop:
 //! cargo test --test windows -- --ignored --test-threads=1
-use dictation_hotkey_native::output;
+use dictation_hotkey_native::{clipboard, output};
 use std::{
     mem::size_of,
     ptr::{null, null_mut},
@@ -10,8 +10,11 @@ use std::{
 use windows_sys::Win32::{
     Foundation::HWND,
     System::{
-        DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
-        Memory::{GlobalLock, GlobalUnlock},
+        DataExchange::{
+            CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard,
+            RegisterClipboardFormatW, SetClipboardData,
+        },
+        Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
         Threading::{AttachThreadInput, GetCurrentThreadId},
     },
     UI::{
@@ -51,6 +54,10 @@ fn unicode_clipboard_and_input_layout() {
             "Win64 INPUT must include the mouse union member"
         );
         unsafe extern "system" fn target_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize {
+            if msg == WM_TIMER && wp == clipboard::RESTORE_TIMER {
+                clipboard::restore(hwnd).unwrap();
+                return 0;
+            }
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         let class = w("DictationInputTestTarget");
@@ -119,6 +126,8 @@ fn unicode_clipboard_and_input_layout() {
         GlobalUnlock(mem);
         CloseClipboard();
         // Cross the keystroke batching boundary and include surrogate pairs.
+        let original = "Keep this clipboard 😀";
+        output::copy(parent.0, original).unwrap();
         let text = "Hello 😀 𝄞 café ".repeat(17);
         for (mode, shortcut) in [
             ("keystrokes", "shift_insert"),
@@ -149,7 +158,107 @@ fn unicode_clipboard_and_input_layout() {
                 );
                 std::thread::sleep(Duration::from_millis(10));
             }
+            // SendInput is asynchronous; let the controller-style restore timer fire.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                pump();
+                if clipboard_text(parent.0) == original {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "original clipboard was not restored"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
+    }
+}
+
+unsafe fn clipboard_text(hwnd: HWND) -> String {
+    assert_ne!(OpenClipboard(hwnd), 0);
+    let mem = GetClipboardData(13);
+    assert!(!mem.is_null());
+    let ptr = GlobalLock(mem) as *const u16;
+    assert!(!ptr.is_null());
+    let mut len = 0;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    let text = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+    GlobalUnlock(mem);
+    CloseClipboard();
+    text
+}
+
+#[test]
+#[ignore = "changes clipboard; run explicitly on an interactive desktop"]
+fn clipboard_preserves_formats_empty_contents_and_newer_copies() {
+    unsafe {
+        let hwnd = Window(CreateWindowExW(
+            0,
+            w("STATIC").as_ptr(),
+            w("").as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null(),
+        ));
+        assert!(!hwnd.0.is_null());
+        output::copy(hwnd.0, "original 😀").unwrap();
+        let format = RegisterClipboardFormatW(w("DictationHotkeyTestFormat").as_ptr());
+        assert_ne!(format, 0);
+        let bytes = b"custom rich content\0";
+        assert_ne!(OpenClipboard(hwnd.0), 0);
+        let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+        assert!(!mem.is_null());
+        let ptr = GlobalLock(mem) as *mut u8;
+        assert!(!ptr.is_null());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+        GlobalUnlock(mem);
+        assert!(!SetClipboardData(format, mem).is_null());
+        CloseClipboard();
+
+        clipboard::prepare_paste(hwnd.0, "temporary").unwrap();
+        assert_eq!(clipboard_text(hwnd.0), "temporary");
+        assert_eq!(
+            clipboard::prepare_paste(hwnd.0, "too soon")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        clipboard::restore(hwnd.0).unwrap();
+        assert_eq!(clipboard_text(hwnd.0), "original 😀");
+        assert_ne!(OpenClipboard(hwnd.0), 0);
+        let restored = GetClipboardData(format);
+        assert!(!restored.is_null());
+        let ptr = GlobalLock(restored) as *const u8;
+        assert_eq!(std::slice::from_raw_parts(ptr, bytes.len()), bytes);
+        GlobalUnlock(restored);
+        CloseClipboard();
+
+        // A newer explicit Copy Last Text/user copy must not be overwritten.
+        clipboard::prepare_paste(hwnd.0, "temporary").unwrap();
+        output::copy(hwnd.0, "newer clipboard").unwrap();
+        clipboard::restore(hwnd.0).unwrap();
+        assert_eq!(clipboard_text(hwnd.0), "newer clipboard");
+
+        assert_ne!(OpenClipboard(hwnd.0), 0);
+        assert_ne!(EmptyClipboard(), 0);
+        CloseClipboard();
+        clipboard::prepare_paste(hwnd.0, "temporary").unwrap();
+        clipboard::restore(hwnd.0).unwrap();
+        assert_ne!(OpenClipboard(hwnd.0), 0);
+        assert!(
+            GetClipboardData(13).is_null(),
+            "empty clipboard must stay empty"
+        );
+        CloseClipboard();
     }
 }
 #[test]

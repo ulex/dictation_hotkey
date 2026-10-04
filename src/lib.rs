@@ -2,6 +2,8 @@
 #[cfg(windows)]
 pub mod audio;
 pub mod bounded;
+#[cfg(windows)]
+pub mod clipboard;
 pub mod config;
 pub mod diagnostics;
 pub mod hotkey;

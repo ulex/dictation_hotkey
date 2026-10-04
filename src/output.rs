@@ -1,18 +1,14 @@
 //! Win32 output. A failed paste is not reported as successful insertion.
-use std::{io, mem::size_of, ptr::copy_nonoverlapping};
+pub use crate::clipboard::copy;
+use std::{io, mem::size_of};
 use windows_sys::Win32::{
-    Foundation::{GlobalFree, HWND},
-    System::{
-        DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
-        Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
-    },
+    Foundation::HWND,
     UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
         KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC_EX,
     },
 };
 pub const MARK: usize = 0xD1C7A710;
-const CF_UNICODETEXT: u32 = 13;
 
 fn key(vk: u16, scan: u16, flags: u32) -> INPUT {
     INPUT {
@@ -79,46 +75,6 @@ pub fn mask_windows_release(vk: u16, scan: u16) -> io::Result<()> {
     ])
 }
 
-// HWND is supplied by the controller's live UI window; clipboard APIs do not retain it.
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn copy(hwnd: HWND, text: &str) -> io::Result<()> {
-    if text.is_empty() {
-        return Ok(());
-    }
-    let data: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        if OpenClipboard(hwnd) == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "clipboard is in use",
-            ));
-        }
-        let result = (|| {
-            let mem = GlobalAlloc(GMEM_MOVEABLE, data.len() * 2);
-            if mem.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let dest = GlobalLock(mem) as *mut u16;
-            if dest.is_null() {
-                GlobalFree(mem);
-                return Err(io::Error::last_os_error());
-            }
-            copy_nonoverlapping(data.as_ptr(), dest, data.len());
-            GlobalUnlock(mem);
-            if EmptyClipboard() == 0 {
-                GlobalFree(mem);
-                return Err(io::Error::last_os_error());
-            }
-            if SetClipboardData(CF_UNICODETEXT, mem).is_null() {
-                GlobalFree(mem);
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        })();
-        CloseClipboard();
-        result
-    }
-}
 fn combo(keys: &[u16]) -> io::Result<()> {
     let mut events = Vec::with_capacity(keys.len() * 2);
     for &vk in keys {
@@ -152,13 +108,17 @@ pub fn type_text(hwnd: HWND, text: &str, mode: &str, shortcut: &str) -> io::Resu
         }
     }
     if mode != "keystrokes" {
-        copy(hwnd, text)?;
+        crate::clipboard::prepare_paste(hwnd, text)?;
         let keys: &[u16] = match shortcut {
             "ctrl_v" => &[0x11, 0x56],
             "ctrl_shift_v" => &[0x11, 0x10, 0x56],
             _ => &[0x10, 0x2d],
         };
-        return combo(keys);
+        let result = combo(keys);
+        if result.is_err() {
+            let _ = crate::clipboard::restore(hwnd);
+        }
+        return result;
     }
     let mut events = Vec::with_capacity(500);
     for character in text.chars() {
