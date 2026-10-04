@@ -1,6 +1,6 @@
 # Dictation Hotkey Native
 
-Windows 10/11 x64 native rewrite of Dictation Hotkey. The native app keeps the existing `%APPDATA%/dictation_hotkey/config.json` settings format while replacing the Python/Qt runtime with Win32 UI, WASAPI capture, WinHTTP networking, bounded session state, and native clipboard/SendInput output.
+Windows 10/11 x64 Rust implementation of Dictation Hotkey. This is the only application implementation in the repository; the legacy Python/Qt app and build pipeline have been removed. The app keeps the existing `%APPDATA%/dictation_hotkey/config.json` settings format and uses Win32 UI, WASAPI capture, WinHTTP networking, bounded session state, and native clipboard/SendInput output.
 
 ## What is implemented
 
@@ -52,7 +52,9 @@ The release executable is:
 native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
 ```
 
-Package it as `DictationHotkey.exe` for distribution.
+Package it as `DictationHotkey.exe` for distribution. Python and Qt are not required to build or run it.
+
+`../tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
 
 ## Validation status
 

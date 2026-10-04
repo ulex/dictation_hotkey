@@ -1,59 +1,56 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding assistants working in this repository.
 
 ## What This Is
 
-Windows-only system tray dictation app. Global hotkey toggles mic recording on/off. While recording, audio streams to Mistral's realtime transcription API and text is typed into the focused window via SendInput as it arrives (real-time, not buffered).
+Windows-only system tray dictation app implemented in Rust under `native/`. Global hotkeys toggle microphone recording. Realtime mode streams audio to Mistral and inserts text into the focused window as it arrives; batch mode records first and uploads a temporary WAV. Both modes require internet access and a Mistral API key.
 
-## Running
+The legacy Python/Qt app and PyInstaller build have been removed. `tools/verify_sdk_protocol.py` is an optional development-only SDK fixture checker, not an application or build dependency.
 
+## Build and Test
+
+On Windows, install Rust 1.99.0 and MSVC Build Tools with the C++ tools and Windows SDK. From the repository root:
+
+```powershell
+cd native
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
-pip install -r requirements.txt
-python main.py
-```
 
-No tests or linter configured.
+Run `native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe` (relative to the repository root). Distribution names it `DictationHotkey.exe`.
+
+See `native/README.md` for cross-building and opt-in Windows integration tests. Interactive tests change clipboard/window state or inject input; do not run them unattended. Validation results and remaining manual checks are in `benchmarks/WINDOWS_VALIDATION.md`.
 
 ## Architecture
 
-```
-Hotkey press (Win+Y)
-    │
-    ▼
-main.py App._on_hotkey()  ──toggles──►  App._start_recording() / _stop_recording()
-    │                                        │
-    │                                        ├─ audio.py AudioCapture
-    │                                        │    sounddevice InputStream → base64 PCM16 → queue.Queue
-    │                                        │
-    │                                        ├─ transcription.py TranscriptionWorker
-    │                                        │    Reads queue in async generator → Mistral WebSocket
-    │                                        │    Emits text_delta Signal per chunk
-    │                                        │
-    │                                        └─ typing_output.py type_text()
-    │                                             "paste" mode (default): set clipboard → paste shortcut
-    │                                             (Shift+Insert / Ctrl+V / Ctrl+Shift+V, configurable)
-    │                                             "keystrokes" mode: one batched SendInput KEYEVENTF_UNICODE call
-    ▼
-overlay.py  ── frameless always-on-top status widget
-tray.py     ── QSystemTrayIcon with Settings/Quit menu
-settings.py ── QDialog for API key, hotkey, language
-config.py   ── JSON persistence in %APPDATA%/dictation_hotkey/
-```
+- `native/src/main.rs`: single-instance Win32 controller, message loop, tray menu, hotkey dispatch, session coordination, and output dispatch.
+- `hotkey.rs`: Win+H/Copilot suppression and hotkey matching; custom shortcuts use `RegisterHotKey`.
+- `runtime.rs`: session-scoped capture, spooling, realtime networking, batch fallback, and cancellation workers.
+- `audio.rs`: event-driven WASAPI microphone capture.
+- `spool.rs`: bounded temporary WAV storage and cleanup.
+- `service_ws.rs`, `service.rs`, `network_handle.rs`: WinHTTP realtime WebSocket and streamed batch upload.
+- `protocol.rs`, `wire.rs`: bounded provider parsing and request framing.
+- `session.rs`, `bounded.rs`: session/operation state and bounded event queues.
+- `output.rs`: clipboard paste and Unicode `SendInput` output.
+- `overlay.rs`, `settings_ui.rs`, `logs_ui.rs`, `ui_font.rs`: native Win32 UI.
+- `config.rs`, `paths.rs`, `startup.rs`: JSON persistence, Windows known-folder paths, and per-user Startup shortcut management.
 
-## Threading Model
+## Threading and Ownership
 
-Three threads matter:
-1. **Main thread (Qt)** — event loop, UI, signal/slot dispatch
-2. **Hotkey thread** — Win32 `RegisterHotKey` + `GetMessageW` pump, emits Qt signal on hotkey
-3. **Async thread** — `asyncio.run_forever()` hosts the Mistral WebSocket coroutine and audio stream generator
-
-`TranscriptionWorker` lives as a QObject on the main thread. Its `_handle` coroutine runs on the async thread via `run_coroutine_threadsafe`, but emits Qt signals (`text_delta`, `error`, `finished`) which are delivered to the main thread's event loop.
+The Win32 UI thread owns application/session state and dispatches output. Recording creates session, capture, and (for realtime mode) network workers. Bounded channels carry PCM; a bounded event queue posts results to the controller through Win32 messages. Session/operation tickets reject stale events. Stop and abort flags coordinate shutdown, and session workers join capture/network workers before completion.
 
 ## Key Constraints
 
-- **Windows-only**: uses `ctypes.windll.user32` for hotkey registration and SendInput
-- **Win32 INPUT struct**: the union must include MOUSEINPUT (largest member) for correct `sizeof(INPUT)`, otherwise SendInput silently fails
-- Audio format must be PCM16 mono 16kHz (`pcm_s16le`) to match Mistral's expected format
-- 2 seconds of silence warmup is sent before real audio to initialize the Mistral session
-- `proto/` is a reference Gradio app (not part of this app) — kept for API usage examples only
+- The app is Windows-only; portable core tests can run on other platforms.
+- Audio must be PCM16 mono 16 kHz (`pcm_s16le`). Realtime setup sends the SDK-equivalent silence warmup before microphone audio; warmup must not enter the fallback WAV.
+- Keep queues, protocol parsing, logs, session state, and temporary audio storage bounded. Do not buffer entire recordings in RAM.
+- After partial realtime insertion, retain the full batch fallback result for Copy Last Text rather than automatically inserting duplicate text.
+- Tag injected input events so hotkey hooks ignore them; preserve Windows-key release suppression behavior.
+- Settings remain compatible with `%APPDATA%/dictation_hotkey/config.json`; preserve unknown fields and the pre-native backup. Never log API keys or recorded audio.
+- Startup changes must be explicit and support restoring the original shortcut on failure.
+- CI in `.github/workflows/build.yml` builds and publishes only the native Rust application.
+
+`PLAN.md` is the historical rewrite design, not current build/run guidance. `native/PROTOCOL.md` records SDK-derived wire behavior.

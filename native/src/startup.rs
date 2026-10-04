@@ -1,5 +1,5 @@
 //! Explicit per-user Startup shortcut changes; rollback restores the original shortcut bytes,
-//! not a reconstructed link that might accidentally replace the Python application's target.
+//! not a reconstructed link that might accidentally change an existing shortcut's target.
 use std::{io, os::windows::ffi::OsStrExt, path::PathBuf};
 use windows::{
     core::{Interface, PCWSTR},

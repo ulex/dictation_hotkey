@@ -4,7 +4,7 @@ use std::{fs, io, path::Path};
 pub const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_FIELD_CHARS: usize = 4096;
 
-/// Keep unknown fields for round trips with the Python application.
+/// Preserve unknown fields, including settings migrated from the legacy application.
 #[derive(Clone)]
 pub struct Config {
     fields: Map<String, Value>,

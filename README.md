@@ -17,9 +17,9 @@ Before downloading, you might want to try the [online demo](https://huggingface.
 
 ![](.github/settings.png)
 
-## Native rewrite
+## Native Rust application
 
-The Windows-native rewrite lives in [`native/`](native/README.md). It replaces the Python/Qt implementation with Win32 UI, WASAPI microphone capture, WinHTTP realtime/batch transcription, bounded temporary WAV spooling, and native clipboard/SendInput output. The old Python files remain in the repository for reference and rollback.
+Dictation Hotkey is a Windows-native Rust app. The implementation lives in [`native/`](native/README.md) and uses Win32 UI, WASAPI microphone capture, WinHTTP realtime/batch transcription, bounded temporary WAV spooling, and native clipboard/SendInput output. The legacy Python/Qt app and its build pipeline have been removed; only the native application is built and distributed.
 
 ## Getting Started
 
@@ -29,9 +29,37 @@ Download `DictationHotkey.exe` from the [latest release](../../releases/latest) 
 
 - Windows 10/11 x64
 - A [Mistral API key](https://console.mistral.ai/) with access to the transcription APIs
+- An internet connection — both realtime and batch modes use Mistral's cloud APIs, not local speech recognition
 
-### Build
+### Usage
 
-See the [GitHub workflow](./.github/workflows/build.yml) or [`native/README.md`](native/README.md). The release build is produced from `native/` with Rust 1.99 and the `x86_64-pc-windows-msvc` target.
+1. Run `DictationHotkey.exe` and enter your API key in Settings.
+2. Select Win+H, the Copilot key, or a custom shortcut, then save your settings.
+3. Focus the window where you want text inserted and press the shortcut to start dictating.
+4. Press the shortcut again, press Esc, or click the overlay to stop.
+
+Right-click the tray icon for Settings, Logs, Copy Last Text, batch mode, and Quit. Left-click the tray icon to start a clipboard-only recording instead of typing into the focused window.
+
+Settings are stored in `%APPDATA%/dictation_hotkey/config.json`. Existing settings from the Python app remain compatible; the first pre-native configuration is backed up as `config.pre-native.json` when settings are saved.
+
+### Build from source
+
+Install Rust 1.99.0 and MSVC Build Tools with the C++ tools and Windows SDK. From the repository root:
+
+```powershell
+cd native
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked --target x86_64-pc-windows-msvc
+```
+
+The executable is `native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe`; rename it to `DictationHotkey.exe` for distribution. Python and Qt are not needed to build or run the app.
+
+See [`native/README.md`](native/README.md) for toolchain installation, cross-building, and opt-in Windows tests. The [GitHub workflow](./.github/workflows/build.yml) builds the native executable, ZIP, and SHA-256 checksums.
+
+### Validation
+
+Build and smoke-test results and remaining manual checks are documented in [`benchmarks/WINDOWS_VALIDATION.md`](benchmarks/WINDOWS_VALIDATION.md). Authenticated transcription, microphone recording, and clean-machine behavior still require validation before broad publication.
 
 **Beware:** most of the code was AI-generated. Review and smoke-test on Windows before relying on a new release.

@@ -1,4 +1,0 @@
-PySide6
-mistralai[realtime]<2
-miniaudio
-keyboard

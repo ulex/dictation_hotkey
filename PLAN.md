@@ -1,5 +1,7 @@
 # Native Windows rewrite plan
 
+> Historical design document: the Rust application now lives in `native/`, and the legacy Python/Qt app and its CI build have been removed. References below to Python source files, retaining the old app, and the former build pipeline describe the pre-migration repository, not current instructions. See [README.md](README.md), [native/README.md](native/README.md), and [benchmarks/WINDOWS_VALIDATION.md](benchmarks/WINDOWS_VALIDATION.md) for current usage and validation status.
+
 ## 1. Recommendation and scope
 
 Rewrite the application in **Rust, using Win32 controls, WASAPI audio capture, and WinHTTP networking**. Keep it a portable, single-file Windows application; do not introduce a GUI framework, browser runtime, bundled speech model, or general-purpose asynchronous runtime.
