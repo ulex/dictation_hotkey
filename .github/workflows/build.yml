@@ -9,9 +9,6 @@ on:
 jobs:
   native-release:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: native
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -45,14 +42,14 @@ jobs:
         with:
           name: DictationHotkey-Native-Release
           path: |
-            native/dist/DictationHotkey.exe
-            native/dist/DictationHotkey-win64.zip
-            native/dist/SHA256SUMS.txt
+            dist/DictationHotkey.exe
+            dist/DictationHotkey-win64.zip
+            dist/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: |
-            native/dist/DictationHotkey.exe
-            native/dist/DictationHotkey-win64.zip
-            native/dist/SHA256SUMS.txt
+            dist/DictationHotkey.exe
+            dist/DictationHotkey-win64.zip
+            dist/SHA256SUMS.txt
           token: ${{ secrets.PUB_TOKEN }}

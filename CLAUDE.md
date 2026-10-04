@@ -4,7 +4,7 @@ This file provides guidance to coding assistants working in this repository.
 
 ## What This Is
 
-Windows-only system tray dictation app implemented in Rust under `native/`. Global hotkeys toggle microphone recording. Realtime mode streams audio to Mistral and inserts text into the focused window as it arrives; batch mode records first and uploads a temporary WAV. Both modes require internet access and a Mistral API key.
+Windows-only system tray dictation app implemented in Rust at the repository root (`Cargo.toml`, `src/`, `tests/`, and `resources/`). Global hotkeys toggle microphone recording. Realtime mode streams audio to Mistral and inserts text into the focused window as it arrives; batch mode records first and uploads a temporary WAV. Both modes require internet access and a Mistral API key.
 
 The legacy Python/Qt app and PyInstaller build have been removed. `tools/verify_sdk_protocol.py` is an optional development-only SDK fixture checker, not an application or build dependency.
 
@@ -13,20 +13,19 @@ The legacy Python/Qt app and PyInstaller build have been removed. `tools/verify_
 On Windows, install Rust 1.99.0 and MSVC Build Tools with the C++ tools and Windows SDK. From the repository root:
 
 ```powershell
-cd native
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
 
-Run `native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe` (relative to the repository root). Distribution names it `DictationHotkey.exe`.
+Run `target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe` (relative to the repository root). Distribution names it `DictationHotkey.exe`.
 
-See `native/README.md` for cross-building and opt-in Windows integration tests. Interactive tests change clipboard/window state or inject input; do not run them unattended. Validation results and remaining manual checks are in `benchmarks/WINDOWS_VALIDATION.md`.
+See `BUILDING.md` for cross-building and opt-in Windows integration tests. Interactive tests change clipboard/window state or inject input; do not run them unattended. Validation results and remaining manual checks are in `benchmarks/WINDOWS_VALIDATION.md`.
 
 ## Architecture
 
-- `native/src/main.rs`: single-instance Win32 controller, message loop, tray menu, hotkey dispatch, session coordination, and output dispatch.
+- `src/main.rs`: single-instance Win32 controller, message loop, tray menu, hotkey dispatch, session coordination, and output dispatch.
 - `hotkey.rs`: Win+H/Copilot suppression and hotkey matching; custom shortcuts use `RegisterHotKey`.
 - `runtime.rs`: session-scoped capture, spooling, realtime networking, batch fallback, and cancellation workers.
 - `audio.rs`: event-driven WASAPI microphone capture.
@@ -53,4 +52,4 @@ The Win32 UI thread owns application/session state and dispatches output. Record
 - Startup changes must be explicit and support restoring the original shortcut on failure.
 - CI in `.github/workflows/build.yml` builds and publishes only the native Rust application.
 
-`PLAN.md` is the historical rewrite design, not current build/run guidance. `native/PROTOCOL.md` records SDK-derived wire behavior.
+`PLAN.md` is the historical rewrite design, not current build/run guidance. `PROTOCOL.md` records SDK-derived wire behavior.

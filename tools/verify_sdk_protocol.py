@@ -14,7 +14,7 @@ from mistralai.models import (
 )
 
 assert importlib.metadata.version("mistralai") == "1.12.4"
-fixture = json.loads((Path(__file__).resolve().parent.parent / "native/tests/fixtures/sdk-1.12.4.json").read_text(encoding="utf-8"))
+fixture = json.loads((Path(__file__).resolve().parent.parent / "tests/fixtures/sdk-1.12.4.json").read_text(encoding="utf-8"))
 messages = {
     "session_update": RealtimeTranscriptionSessionUpdateMessage(session=RealtimeTranscriptionSessionUpdatePayload(audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000))),
     "append": RealtimeTranscriptionInputAudioAppend(audio="AAECAw=="),

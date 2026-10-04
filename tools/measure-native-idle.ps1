@@ -1,7 +1,7 @@
 # Launch the native release, dismiss first-run Settings without saving, sample idle
 # memory, then request coordinated shutdown. Never changes credentials/settings.
 param(
-    [string]$ExePath = "$PSScriptRoot\..\native\target\x86_64-pc-windows-msvc\release\dictation-hotkey-native.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\x86_64-pc-windows-msvc\release\dictation-hotkey-native.exe",
     [ValidateRange(1, 3600)][int]$Seconds = 30,
     [string]$OutputDirectory = "$PSScriptRoot\..\benchmarks\windows"
 )

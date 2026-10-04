@@ -19,7 +19,7 @@ Before downloading, you might want to try the [online demo](https://huggingface.
 
 ## Native Rust application
 
-Dictation Hotkey is a Windows-native Rust app. The implementation lives in [`native/`](native/README.md) and uses Win32 UI, WASAPI microphone capture, WinHTTP realtime/batch transcription, bounded temporary WAV spooling, and native clipboard/SendInput output. The legacy Python/Qt app and its build pipeline have been removed; only the native application is built and distributed.
+Dictation Hotkey is a Windows-native Rust app. The Rust project lives at the repository root, with application code in [`src/`](src/), and uses Win32 UI, WASAPI microphone capture, WinHTTP realtime/batch transcription, bounded temporary WAV spooling, and native clipboard/SendInput output. The legacy Python/Qt app and its build pipeline have been removed; only the native application is built and distributed.
 
 ## Getting Started
 
@@ -47,16 +47,15 @@ Settings are stored in `%APPDATA%/dictation_hotkey/config.json`. Existing settin
 Install Rust 1.99.0 and MSVC Build Tools with the C++ tools and Windows SDK. From the repository root:
 
 ```powershell
-cd native
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
 
-The executable is `native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe`; rename it to `DictationHotkey.exe` for distribution. Python and Qt are not needed to build or run the app.
+The executable is `target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe`; rename it to `DictationHotkey.exe` for distribution. Python and Qt are not needed to build or run the app.
 
-See [`native/README.md`](native/README.md) for toolchain installation, cross-building, and opt-in Windows tests. The [GitHub workflow](./.github/workflows/build.yml) builds the native executable, ZIP, and SHA-256 checksums.
+See [`BUILDING.md`](BUILDING.md) for toolchain installation, cross-building, and opt-in Windows tests. The [GitHub workflow](./.github/workflows/build.yml) builds the native executable, ZIP, and SHA-256 checksums.
 
 ### Validation
 

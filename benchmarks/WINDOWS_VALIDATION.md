@@ -1,5 +1,7 @@
 # Native rewrite: Windows validation
 
+> Historical results: artifact paths below reflect the original validation layout. The Rust project has since moved from `native/` to the repository root; current builds use `target/` and `dist/`. See [BUILDING.md](../BUILDING.md) for current commands.
+
 Initial run on 2026-10-04 against rewrite commit `09f71ce` plus test/documentation changes, **before the follow-up Win+H patch below**. The initial native Windows build and local smoke checks pass, but end-to-end speech transcription is not yet validated.
 
 ## Environment and installed tools
@@ -105,7 +107,6 @@ Formatting, strict Clippy, all 28 default non-ignored tests (27 unit tests plus 
 The probe uses externally tagged `SendInput` key sequences, including a burst with all four events in one batch. It exercises the real application hook and Windows Start menu, not only the portable matcher. Because this profile has an empty API key, app activation opens Settings; it does not establish successful microphone recording. Reproduce with:
 
 ```powershell
-cd native
 cargo test --locked --test windows_hotkey -- --ignored --test-threads=1
 ```
 

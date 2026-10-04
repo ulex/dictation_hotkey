@@ -1,5 +1,7 @@
 # Baseline/resource measurement status
 
+> Historical artifact paths below predate the move of the Rust project to the repository root. Current builds use root `target/` and `dist/`; see [BUILDING.md](../BUILDING.md).
+
 Native Windows build/smoke checks and a 30-second idle sample are now recorded in [WINDOWS_VALIDATION.md](WINDOWS_VALIDATION.md), with raw data under [windows/](windows/). Successful microphone capture and authenticated transcription remain blocked by the validation session's missing capture endpoint/API key. No legacy Python performance baseline, active-session benchmark, or clean-machine run has been measured.
 
 `sample-process.ps1` is a general Windows data collection helper; `../tools/measure-native-idle.ps1` launches/samples/closes the native release automatically. Retain raw CSV alongside OS/build, mic, SDK pin, network, hashes, and actions performed. The legacy Python app and its build job have been removed. Any future historical comparison must use a pre-removal revision and account for PyInstaller parent/child processes and the unpacked extraction directory.

@@ -1,4 +1,4 @@
-# Dictation Hotkey Native
+# Building and validating Dictation Hotkey
 
 Windows 10/11 x64 Rust implementation of Dictation Hotkey. This is the only application implementation in the repository; the legacy Python/Qt app and build pipeline have been removed. The app keeps the existing `%APPDATA%/dictation_hotkey/config.json` settings format and uses Win32 UI, WASAPI capture, WinHTTP networking, bounded session state, and native clipboard/SendInput output.
 
@@ -25,10 +25,9 @@ winget install --id Rustlang.Rustup --exact --source winget
 rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
 ```
 
-Build and run the non-interactive tests:
+Build and run the non-interactive tests from the repository root:
 
 ```powershell
-cd native
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
@@ -38,7 +37,6 @@ cargo build --release --locked --target x86_64-pc-windows-msvc
 From Linux, portable tests and target checks can run, and an MSVC-linked release can be produced with `cargo-xwin`:
 
 ```bash
-cd native
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
@@ -49,18 +47,18 @@ cargo xwin build --release --locked --target x86_64-pc-windows-msvc
 The release executable is:
 
 ```text
-native/target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
+target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
 ```
 
 Package it as `DictationHotkey.exe` for distribution. Python and Qt are not required to build or run it.
 
-`../tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
+`tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
 
 ## Validation status
 
-The portable core has automated tests for config migration, hotkey parsing, bounded queues, session state, protocol parsing/framing, WAV spooling, multipart sizing, and output edge cases. Windows build and smoke-test results are recorded in [`../benchmarks/WINDOWS_VALIDATION.md`](../benchmarks/WINDOWS_VALIDATION.md), with raw idle measurements under `../benchmarks/windows/`.
+The portable core has automated tests for config migration, hotkey parsing, bounded queues, session state, protocol parsing/framing, WAV spooling, multipart sizing, and output edge cases. Windows build and smoke-test results are recorded in [`benchmarks/WINDOWS_VALIDATION.md`](benchmarks/WINDOWS_VALIDATION.md), with raw idle measurements under `benchmarks/windows/`.
 
-Opt-in tests (run from `native/`):
+Opt-in tests (run from the repository root):
 
 ```powershell
 # Close the app first. Use an unlocked desktop and a foreground terminal.
@@ -87,7 +85,7 @@ cargo test --locked --test windows_io wasapi -- --ignored --nocapture
 cargo test --locked --test windows_io winhttp -- --ignored --nocapture
 
 # Launch release, dismiss first-run Settings without saving, sample idle, quit.
-powershell -NoProfile -ExecutionPolicy Bypass -File ../tools/measure-native-idle.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/measure-native-idle.ps1
 ```
 
 Desktop input tests assert that the controlled window is foreground before injecting text. A background agent shell, locked desktop, or elevated foreground application can prevent activation; run them from a foreground PowerShell window rather than bypassing Windows input security.
