@@ -243,6 +243,52 @@ fn clipboard_preserves_formats_empty_contents_and_newer_copies() {
         GlobalUnlock(restored);
         CloseClipboard();
 
+        // Simulate targets requesting synthesized ANSI/OEM formats rather than Unicode.
+        clipboard::prepare_paste(hwnd.0, "temporary Unicode 😀").unwrap();
+        assert_ne!(OpenClipboard(hwnd.0), 0);
+        assert!(!GetClipboardData(1).is_null()); // CF_TEXT
+        assert!(!GetClipboardData(7).is_null()); // CF_OEMTEXT
+        CloseClipboard();
+        assert_eq!(
+            clipboard::restore(hwnd.0).unwrap(),
+            clipboard::RestoreOutcome::Restored
+        );
+        assert_eq!(clipboard_text(hwnd.0), "original 😀");
+
+        // A newer copy from a different clipboard owner wins even with identical text.
+        clipboard::prepare_paste(hwnd.0, "temporary").unwrap();
+        let other = Window(CreateWindowExW(
+            0,
+            w("STATIC").as_ptr(),
+            w("").as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null(),
+        ));
+        assert!(!other.0.is_null());
+        let data: Vec<u16> = "temporary".encode_utf16().chain(Some(0)).collect();
+        let replacement = GlobalAlloc(GMEM_MOVEABLE, data.len() * 2);
+        assert!(!replacement.is_null());
+        let ptr = GlobalLock(replacement) as *mut u16;
+        assert!(!ptr.is_null());
+        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        GlobalUnlock(replacement);
+        assert_ne!(OpenClipboard(other.0), 0);
+        assert_ne!(EmptyClipboard(), 0);
+        assert!(!SetClipboardData(13, replacement).is_null());
+        CloseClipboard();
+        assert_eq!(
+            clipboard::restore(hwnd.0).unwrap(),
+            clipboard::RestoreOutcome::Superseded
+        );
+        assert_eq!(clipboard_text(hwnd.0), "temporary");
+
         // A newer explicit Copy Last Text/user copy must not be overwritten.
         clipboard::prepare_paste(hwnd.0, "temporary").unwrap();
         output::copy(hwnd.0, "newer clipboard").unwrap();

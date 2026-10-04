@@ -9,7 +9,8 @@ use windows_sys::Win32::{
     System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-            GetClipboardSequenceNumber, OpenClipboard, SetClipboardData, METAFILEPICT,
+            GetClipboardOwner, GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+            METAFILEPICT,
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
         Ole::OleDuplicateData,
@@ -76,9 +77,33 @@ impl Drop for Format {
 struct Pending {
     formats: Vec<Format>,
     sequence: u32,
+    paste_data: HANDLE,
     emptied: bool,
 }
 thread_local! { static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) }; }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    Restored,
+    Superseded,
+    Idle,
+}
+
+// Synthesized ANSI/OEM text can advance the sequence without replacing our
+// Unicode allocation. Ownership + handle identity distinguish that from a copy.
+fn still_ours(
+    partial: bool,
+    has_paste_data: bool,
+    same_sequence: bool,
+    same_owner: bool,
+    same_data: bool,
+) -> bool {
+    if partial || !has_paste_data {
+        same_sequence
+    } else {
+        same_owner && same_data
+    }
+}
 
 // Clipboard must stay open throughout snapshot and replacement, closing the race
 // with other applications. Delayed-rendered formats are materialized by GetClipboardData.
@@ -179,7 +204,15 @@ pub fn copy(hwnd: HWND, text: &str) -> io::Result<()> {
         return Ok(());
     }
     let _open = Open::new(hwnd)?;
-    unsafe { replace(text) }
+    unsafe {
+        replace(text)?;
+    }
+    // An explicit Copy Last Text/Copy Logs wins even if Windows reuses a handle.
+    PENDING.with(|pending| *pending.borrow_mut() = None);
+    unsafe {
+        KillTimer(hwnd, RESTORE_TIMER);
+    }
+    Ok(())
 }
 
 /// Prepare a paste. Pending restoration holds off subsequent output, not the UI.
@@ -198,10 +231,18 @@ pub fn prepare_paste(hwnd: HWND, text: &str) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     let result = unsafe { replace(text) };
+    let paste_data = if result.is_ok() {
+        unsafe { GetClipboardData(UNICODE_TEXT) }
+    } else {
+        std::ptr::null_mut()
+    };
+    // Publishing/closing the clipboard can itself update its sequence number.
+    drop(_open);
     PENDING.with(|pending| {
         *pending.borrow_mut() = Some(Pending {
             formats,
             sequence: unsafe { GetClipboardSequenceNumber() },
+            paste_data,
             emptied: false,
         })
     });
@@ -210,13 +251,27 @@ pub fn prepare_paste(hwnd: HWND, text: &str) -> io::Result<()> {
 
 /// Called by the controller's timer; a busy clipboard is retried on the next tick.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn restore(hwnd: HWND) -> io::Result<()> {
+pub fn restore(hwnd: HWND) -> io::Result<RestoreOutcome> {
+    if PENDING.with(|cell| cell.borrow().is_none()) {
+        unsafe {
+            KillTimer(hwnd, RESTORE_TIMER);
+        }
+        return Ok(RestoreOutcome::Idle);
+    }
     let _open = Open::new(hwnd)?;
     PENDING.with(|cell| {
         let mut pending = cell.borrow_mut();
+        let mut outcome = RestoreOutcome::Idle;
         if let Some(saved) = pending.as_mut() {
             unsafe {
-                if GetClipboardSequenceNumber() == saved.sequence {
+                if still_ours(
+                    saved.emptied,
+                    !saved.paste_data.is_null(),
+                    GetClipboardSequenceNumber() == saved.sequence,
+                    GetClipboardOwner() == hwnd,
+                    !saved.emptied && GetClipboardData(UNICODE_TEXT) == saved.paste_data,
+                ) {
+                    outcome = RestoreOutcome::Restored;
                     if !saved.emptied {
                         if EmptyClipboard() == 0 {
                             return Err(io::Error::last_os_error());
@@ -233,6 +288,8 @@ pub fn restore(hwnd: HWND) -> io::Result<()> {
                             format.data = std::ptr::null_mut();
                         }
                     }
+                } else {
+                    outcome = RestoreOutcome::Superseded;
                 }
             }
         }
@@ -240,6 +297,29 @@ pub fn restore(hwnd: HWND) -> io::Result<()> {
         unsafe {
             KillTimer(hwnd, RESTORE_TIMER);
         }
-        Ok(())
+        Ok(outcome)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::still_ours;
+    #[test]
+    fn synthesized_formats_do_not_cancel_restoration() {
+        assert!(still_ours(false, true, false, true, true));
+        assert!(still_ours(false, true, true, true, true));
+    }
+    #[test]
+    fn newer_copies_are_not_overwritten_even_with_matching_text() {
+        assert!(!still_ours(false, true, false, false, true));
+        assert!(!still_ours(false, true, false, true, false));
+        assert!(!still_ours(false, true, true, false, false));
+    }
+    #[test]
+    fn partial_restore_retries_require_unchanged_sequence() {
+        assert!(still_ours(true, true, true, true, false));
+        assert!(!still_ours(true, true, false, true, true));
+        assert!(still_ours(false, false, true, true, false));
+        assert!(!still_ours(false, false, false, true, false));
+    }
 }

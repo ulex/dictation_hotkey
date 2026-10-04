@@ -370,7 +370,7 @@ mod app {
                 }
                 Event::Fallback(_) => {
                     // Unsubmitted deltas must not be injected after fallback. A prefix that reached
-                    // SendInput makes full-batch insertion unsafe; preserve/copy it instead.
+                    // SendInput makes full-batch insertion unsafe; retain it for Copy Last Text.
                     self.pending.clear();
                     self.busy_since = None;
                     self.core.realtime_failure(ticket);
@@ -400,9 +400,7 @@ mod app {
                     self.partial_fallback = self.core.injected_prefix && !self.core.clipboard_only;
                     if insert {
                         self.pending.clone_from(&self.core.text);
-                    } else if (self.core.clipboard_only || self.partial_fallback)
-                        && !self.core.text.is_empty()
-                    {
+                    } else if self.core.clipboard_only && !self.core.text.is_empty() {
                         self.pending_copy = Some(self.core.text.clone());
                     }
                     self.timer();
@@ -510,7 +508,7 @@ mod app {
                     self.core.finish(ticket);
                     self.show(
                         if self.partial_fallback {
-                            "Partial text already inserted; complete result copied (not reinserted)"
+                            "Partial text inserted; complete result available in Copy Last Text"
                         } else if self.core.text.is_empty() {
                             "No speech detected"
                         } else if self.core.clipboard_only {
@@ -731,10 +729,14 @@ mod app {
                 0
             }
             WM_TIMER if wp == clipboard::RESTORE_TIMER => {
-                if let Err(error) = clipboard::restore(hwnd) {
-                    if error.kind() != io::ErrorKind::WouldBlock {
-                        logs_ui::log("Clipboard restoration failed; retrying");
+                match clipboard::restore(hwnd) {
+                    Ok(clipboard::RestoreOutcome::Restored) => logs_ui::log("Clipboard restored"),
+                    Ok(clipboard::RestoreOutcome::Superseded) => {
+                        logs_ui::log("Clipboard restoration skipped: newer clipboard content")
                     }
+                    Ok(clipboard::RestoreOutcome::Idle) => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(_) => logs_ui::log("Clipboard restoration failed; retrying"),
                 }
                 0
             }
