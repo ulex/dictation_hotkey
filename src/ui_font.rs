@@ -1,8 +1,46 @@
-//! DPI-scaled system UI font. Callers release it after all controls/paint operations stop using it.
-use windows_sys::Win32::{Foundation::HWND, Graphics::Gdi::{CreateFontW, HFONT, DEFAULT_CHARSET, DEFAULT_QUALITY, FW_NORMAL}, UI::HiDpi::GetDpiForWindow};
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn create(hwnd: HWND) -> HFONT {
-    let name: Vec<u16> = "Segoe UI".encode_utf16().chain(Some(0)).collect();
-    unsafe { CreateFontW(-(15 * GetDpiForWindow(hwnd).max(96) / 96) as i32,0,0,0,FW_NORMAL as i32,0,0,0,
-        DEFAULT_CHARSET as u32,0,0,DEFAULT_QUALITY as u32,0,name.as_ptr()) }
+//! Owned, DPI-scaled fonts. No font is deleted while its controls are alive.
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateFontW, DeleteObject, GetStockObject, CLEARTYPE_QUALITY, DEFAULT_CHARSET,
+    DEFAULT_GUI_FONT, HFONT,
+};
+
+pub struct Font(HFONT);
+impl Font {
+    pub fn new(dpi: u32, pixels: i32, weight: i32, family: &str) -> Self {
+        let name: Vec<u16> = family.encode_utf16().chain(Some(0)).collect();
+        Self(unsafe {
+            CreateFontW(
+                -(pixels * dpi as i32 / 96),
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                0,
+                0,
+                CLEARTYPE_QUALITY as u32,
+                0,
+                name.as_ptr(),
+            )
+        })
+    }
+    pub fn handle(&self) -> HFONT {
+        if self.0.is_null() {
+            unsafe { GetStockObject(DEFAULT_GUI_FONT) }
+        } else {
+            self.0
+        }
+    }
+}
+impl Drop for Font {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DeleteObject(self.0);
+            }
+        }
+    }
 }

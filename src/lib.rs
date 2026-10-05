@@ -2,6 +2,8 @@
 #[cfg(windows)]
 pub mod audio;
 pub mod bounded;
+#[cfg(windows)]
+pub mod clipboard;
 pub mod config;
 pub mod diagnostics;
 pub mod hotkey;
@@ -28,6 +30,10 @@ pub mod settings_ui;
 pub mod spool;
 #[cfg(windows)]
 pub mod startup;
+#[cfg(windows)]
+mod ui;
+#[cfg(windows)]
+mod ui_font;
 pub mod wire;
 
 #[cfg(target_os = "macos")]

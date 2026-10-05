@@ -11,8 +11,8 @@ Windows 10/11 x64 and macOS 13+ native implementation of Dictation Hotkey. This 
 - Incremental temporary WAV spool with a one-hour/size cap and drop-time deletion; no full-session audio buffer in RAM.
 - Mistral realtime WebSocket adapter over WinHTTP with SDK-equivalent warmup, audio append, flush/end, bounded receive parsing, and graceful finalization.
 - Mistral batch upload over WinHTTP using streamed multipart WAV upload.
-- Safe fallback policy: before any inserted realtime text, batch fallback can insert/copy the complete result; after partial insertion, the complete batch result is retained for Copy Last Text but is not automatically inserted to avoid duplicates.
-- Clipboard paste and Unicode keystroke output with tagged injected events and bounded pacing.
+- Safe fallback policy: before any inserted realtime text, batch fallback can insert/copy the complete result; after partial insertion, the complete batch result is retained for Copy Last Text, without automatically inserting it or replacing the clipboard.
+- Clipboard paste and Unicode keystroke output with tagged injected events and bounded pacing. Paste snapshots the original clipboard formats and restores them on a UI timer after 300 ms. Ownership and Unicode-data identity prevent Windows' synthesized ANSI/OEM formats from being mistaken for a new copy; genuine newer copies are not overwritten. Logs report restoration or a newer-copy skip, without recording clipboard content. Copy Last Text, Copy Logs, and tray-left-click clipboard-only recording intentionally replace the clipboard; use a recording hotkey for automatic paste. Clipboard preservation is capped at 256 formats / 64 MiB; unsupported private formats fail without replacing the clipboard (use keystroke output instead). Very slow or remote targets may consume paste after the restoration delay and need keystroke output.
 
 ## Build/test
 
@@ -87,6 +87,22 @@ Non-interactive tests do not record audio, upload to Mistral, modify the clipboa
 - Authenticated realtime and batch sessions; custom endpoint; disconnect before/after partial insertion, ensuring no duplicate fallback insertion.
 - Shortcut repeats, Escape permission behavior, stopping during startup, quit during recording/upload, and deleted temporary files.
 - Explicit Login Item enable/disable, approval, failure rollback, relaunch, and running the package on a clean machine without developer tools.
+
+## Icon assets
+
+`resources/tray-*.ico` keep the original status-ball design: green is idle, red is recording, and amber is processing, without a center symbol or exclamation mark. Each compact PNG-based ICO contains antialiased 16, 20, 24, 32, 40, 48, and 64 pixel frames. Large 128/256 pixel frames are deliberately omitted to keep the executable small; resource tests enforce a per-icon size budget. The tray loads the DPI-appropriate small-icon size.
+
+Regenerate the assets on Windows (no additional packages required):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-icons.ps1
+```
+
+## Native UI styling
+
+Settings and Logs use Windows common-controls v6 visual styles, DPI-scaled Segoe UI typography, system-color surfaces, consistent spacing, and native keyboard navigation. Settings separates General and Transcription options with a native tab control; validation uses a native task dialog. Logs use a padded, read-only Consolas text area. The nonactivating recording overlay has a rounded silhouette, a smoothed status ball, and a visible Stop affordance. Fonts are owned per window and released after child controls are destroyed.
+
+Windows 11 rounded window frames are requested on a best-effort basis; Windows 10 keeps its standard frame. No web view, WinUI, custom control framework, or runtime asset package is required. System high-contrast colors remain supported. Manual visual checks at different DPI levels, tab/keyboard navigation, and high-contrast checks are still required; interactive tests must be run explicitly on an unlocked desktop.
 
 ## Validation status
 

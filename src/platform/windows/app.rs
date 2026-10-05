@@ -1,5 +1,6 @@
 use dictation_hotkey_native::{
     bounded::Queue,
+    clipboard,
     config::Config,
     hotkey::{self, Action, Matcher},
     logs_ui, output,
@@ -28,6 +29,7 @@ use windows_sys::Win32::{
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
+        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
         Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT},
         Shell::*,
         WindowsAndMessaging::*,
@@ -152,7 +154,15 @@ fn tray(hwnd: HWND, operation: u32, status: &str, state: u16) {
         data.uID = 1;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = TRAY;
-        data.hIcon = LoadIconW(GetModuleHandleW(null()), state as usize as _);
+        let dpi = GetDpiForWindow(hwnd);
+        data.hIcon = LoadImageW(
+            GetModuleHandleW(null()),
+            state as usize as _,
+            IMAGE_ICON,
+            GetSystemMetricsForDpi(SM_CXSMICON, dpi),
+            GetSystemMetricsForDpi(SM_CYSMICON, dpi),
+            LR_DEFAULTCOLOR,
+        );
         let text: Vec<u16> = status.encode_utf16().take(126).collect();
         data.szTip[..text.len()].copy_from_slice(&text);
         if text.last().is_some_and(|c| (0xD800..=0xDBFF).contains(c)) {
@@ -160,6 +170,9 @@ fn tray(hwnd: HWND, operation: u32, status: &str, state: u16) {
         }
         if Shell_NotifyIconW(operation, &data) == 0 && operation == NIM_ADD {
             logs_ui::log("Tray icon creation failed");
+        }
+        if !data.hIcon.is_null() {
+            DestroyIcon(data.hIcon);
         }
     }
 }
@@ -345,7 +358,7 @@ impl App {
             }
             Event::Fallback(_) => {
                 // Unsubmitted deltas must not be injected after fallback. A prefix that reached
-                // SendInput makes full-batch insertion unsafe; preserve/copy it instead.
+                // SendInput makes full-batch insertion unsafe; retain it for Copy Last Text.
                 self.pending.clear();
                 self.busy_since = None;
                 self.core.realtime_failure(ticket);
@@ -375,9 +388,7 @@ impl App {
                 self.partial_fallback = self.core.injected_prefix && !self.core.clipboard_only;
                 if insert {
                     self.pending.clone_from(&self.core.text);
-                } else if (self.core.clipboard_only || self.partial_fallback)
-                    && !self.core.text.is_empty()
-                {
+                } else if self.core.clipboard_only && !self.core.text.is_empty() {
                     self.pending_copy = Some(self.core.text.clone());
                 }
                 self.timer();
@@ -494,7 +505,7 @@ impl App {
                 self.core.finish(ticket);
                 self.show(
                     if self.partial_fallback {
-                        "Partial text already inserted; complete result copied (not reinserted)"
+                        "Partial text inserted; complete result available in Copy Last Text"
                     } else if self.core.text.is_empty() {
                         "No speech detected"
                     } else if self.core.clipboard_only {
@@ -714,6 +725,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             with_app(App::tick);
             0
         }
+        WM_TIMER if wp == clipboard::RESTORE_TIMER => {
+            match clipboard::restore(hwnd) {
+                Ok(clipboard::RestoreOutcome::Restored) => logs_ui::log("Clipboard restored"),
+                Ok(clipboard::RestoreOutcome::Superseded) => {
+                    logs_ui::log("Clipboard restoration skipped: newer clipboard content")
+                }
+                Ok(clipboard::RestoreOutcome::Idle) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => logs_ui::log("Clipboard restoration failed; retrying"),
+            }
+            0
+        }
         WM_COMMAND if wp & 0xffff == SETTINGS => {
             if DIALOG.load(Ordering::Relaxed) {
                 return 0;
@@ -786,6 +809,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             0
         }
         WM_DESTROY => {
+            let _ = clipboard::restore(hwnd);
             with_app(|app| {
                 if !app.hook.is_null() {
                     UnhookWindowsHookEx(app.hook);
@@ -947,8 +971,10 @@ pub fn run() -> Result<(), String> {
             if result <= 0 {
                 break;
             }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if !logs_ui::dialog_message(&msg) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
         APP.with(|cell| {
             cell.borrow_mut().take();
