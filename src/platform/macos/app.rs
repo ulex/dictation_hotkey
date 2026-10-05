@@ -26,6 +26,7 @@ struct App {
     pending: String,
     terminal: Option<Ticket>,
     partial_fallback: bool,
+    insertion_failed: bool,
     next_output: Instant,
 }
 fn error(message: &str) {
@@ -39,7 +40,10 @@ fn status(message: &str, busy: bool) {
     }
 }
 fn output(text: &str, mode: i32) -> bool {
-    ffi::string(text).is_ok_and(|text| unsafe { ffi::dh_output(text.as_ptr(), mode) == 0 })
+    output_result(text, mode) == 0
+}
+fn output_result(text: &str, mode: i32) -> i32 {
+    ffi::string(text).map_or(1, |text| unsafe { ffi::dh_output(text.as_ptr(), mode) })
 }
 impl App {
     fn save(&mut self, next: Config) -> io::Result<()> {
@@ -76,6 +80,9 @@ impl App {
             return Err(io::Error::other("Enter your Mistral API key in Settings."));
         }
         self.config.validate()?;
+        if !clipboard && unsafe { ffi::dh_can_insert() } == 0 {
+            return Err(io::Error::other("Text insertion is not enabled for this build. Choose Enable Text Insertion in the menu, then allow this app in Accessibility. If it is already checked, remove the old entry and add the current app again, then quit and reopen it. Focus a text field before starting dictation. Record to Clipboard is available without this permission."));
+        }
         let Some(ticket) = self
             .core
             .start(self.config.boolean("offline_mode"), clipboard)
@@ -85,6 +92,7 @@ impl App {
         self.pending.clear();
         self.terminal = None;
         self.partial_fallback = false;
+        self.insertion_failed = false;
         let queue = self.queue.clone();
         let emit = Arc::new(move |event: Event| {
             let (bytes, terminal) = match &event {
@@ -113,6 +121,9 @@ impl App {
         Ok(())
     }
     fn flush(&mut self) {
+        self.flush_with(output_result);
+    }
+    fn flush_with(&mut self, write: impl FnOnce(&str, i32) -> i32) {
         if self.pending.is_empty() || Instant::now() < self.next_output {
             return;
         }
@@ -124,14 +135,20 @@ impl App {
         let text = self.pending[..end].to_owned();
         // Conservative accounting: once output is attempted, fallback never reinserts a full result.
         self.core.output_succeeded(self.core.ticket);
-        if !output(
+        let result = write(
             &text,
             i32::from(self.config.string("typing_mode") == "keystrokes"),
-        ) {
+        );
+        if result != 0 {
+            self.insertion_failed = true;
             self.core.clipboard_only = true;
             self.pending.clear();
             status(
-                "Insertion failed — full transcript will remain in Copy Last Text",
+                if result == 2 {
+                    "Text insertion permission was lost — re-enable Accessibility for this build; transcript will be copied"
+                } else {
+                    "Insertion failed — full transcript will remain in Copy Last Text"
+                },
                 true,
             );
             return;
@@ -215,7 +232,13 @@ impl App {
                     let partial = self.partial_fallback;
                     self.core.finish(ticket);
                     status(
-                        if copied {
+                        if self.insertion_failed {
+                            if copied {
+                                "Insertion failed — transcript copied; see Logs"
+                            } else {
+                                "Insertion failed — transcript in Copy Last Text; see Logs"
+                            }
+                        } else if copied {
                             "Copied transcript"
                         } else if partial {
                             "Ready — fallback transcript in Copy Last Text"
@@ -332,6 +355,7 @@ pub fn run() -> io::Result<()> {
         pending: String::new(),
         terminal: None,
         partial_fallback: false,
+        insertion_failed: false,
         next_output: Instant::now(),
     };
     unsafe { ffi::dh_run((&mut app as *mut App).cast(), action, json.as_ptr()) }
@@ -347,6 +371,44 @@ pub fn run() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn insertion_failure_retains_transcript_without_retrying_or_duplicating_fallback() {
+        for failure in [1, 2] {
+            let mut app = App {
+                config: Config::default(),
+                path: PathBuf::new(),
+                core: Controller::default(),
+                queue: Arc::new(Mutex::new(Queue::default())),
+                worker: None,
+                control: None,
+                pending: String::new(),
+                terminal: None,
+                partial_fallback: false,
+                insertion_failed: false,
+                next_output: Instant::now(),
+            };
+            let ticket = app.core.start(false, false).unwrap();
+            assert!(app.core.delta(ticket, "Dictated text 🎤"));
+            app.pending.clone_from(&app.core.text);
+            app.flush_with(|text, mode| {
+                assert_eq!(text, "Dictated text 🎤");
+                assert_eq!(mode, 0);
+                failure
+            });
+            assert!(app.insertion_failed);
+            assert!(app.core.clipboard_only);
+            assert!(app.pending.is_empty());
+            app.flush_with(|_, _| panic!("failed insertion must not be retried"));
+            app.core.realtime_failure(ticket);
+            assert!(app.core.stop());
+            let fallback = app.core.ticket;
+            assert!(!app
+                .core
+                .batch_result(fallback, "Complete dictated text 🎤".into()));
+            app.core.finish(fallback);
+            assert_eq!(app.core.last_text, "Complete dictated text 🎤");
+        }
+    }
     #[test]
     fn single_instance_lock_is_released_on_drop() {
         let path =

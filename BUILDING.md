@@ -69,6 +69,8 @@ python3 tools/package_macos.py
 
 The packager builds for the host architecture, assembles a `.app` with the Rust executable and Swift dylib, removes the development library search path, signs and verifies the bundle, and creates an architecture-specific ZIP and checksum. The app requires macOS 13+ (Login Items uses ServiceManagement). Python is only used for packaging, never at runtime.
 
+The bundle includes the colorful icon in `resources/macos/DictationHotkey.icns` and a compact `resources/macos/menu-icon.png` for the menu bar. The full source artwork (`app-icon.png`) is not packaged. After replacing the artwork, run `python3 tools/generate_macos_icon.py` on macOS with ImageMagick installed to regenerate the palette-compressed ICNS resolutions and menu icon before packaging. ImageMagick is only needed to regenerate artwork, not to build or run the app.
+
 Use `--target aarch64-apple-darwin` or `--target x86_64-apple-darwin` to select an architecture; install that Rust target first. Cross-building the macOS adapter requires an Apple SDK and Swift toolchain on macOS. Existing output bundles are not overwritten; move them aside before packaging again.
 
 Default signing is ad-hoc, suitable for local builds. Pass `--identity 'Developer ID Application: …'` for distribution signing. Public distribution additionally requires Apple's notarization and stapling workflow; CI artifacts are not notarized. The bundle declares [microphone usage](https://developer.apple.com/documentation/avfaudio/avaudioapplication/requestrecordpermission%28completionhandler%3A%29) and the hardened-runtime audio-input entitlement. Microphone and Accessibility approvals are interactive and are not exercised by CI.

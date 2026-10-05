@@ -44,11 +44,13 @@ Settings are stored in `%APPDATA%/dictation_hotkey/config.json`. Existing settin
 
 ### macOS
 
-Build from source using the instructions below, or use the matching `DictationHotkey-macos-arm64.zip` / `DictationHotkey-macos-x64.zip` release artifact. Move **Dictation Hotkey.app** to Applications and launch it. Open Settings from the **Dictate** menu-bar item and enter your Mistral API key.
+Build from source using the instructions below, or use the matching `DictationHotkey-macos-arm64.zip` / `DictationHotkey-macos-x64.zip` release artifact. Move **Dictation Hotkey.app** to Applications and launch it. Open Settings from the microphone menu-bar icon and enter your Mistral API key.
 
 Control+Option+D toggles recording. Configure a different shortcut using Control, Option, Command or Shift plus a letter, digit or F1–F20. Shortcuts use physical key positions; Command+V is reserved for paste output. Use the shortcut, overlay Stop button or menu Stop to finish; Escape also works when macOS allows keyboard monitoring. Record to Clipboard captures without inserting into the focused app.
 
 Allow Microphone access when prompted. For insertion, select **Enable Text Insertion…** and grant Accessibility access in System Settings → Privacy & Security. Paste uses Command+V; Unicode keystrokes are also available. If insertion fails, the transcript remains available through Copy Last Text. After partial realtime insertion, batch fallback keeps the complete result for copying without reinserting it.
+
+The menu shows **Text Insertion Enabled** with a checkmark only when the running app has permission to post keyboard events. Focus a text field and use the recording shortcut after approving access. Local ad-hoc builds have a different signing identity after each code change: if Accessibility already shows an enabled entry but the app reports missing permission, quit the app, remove that entry, add the current `.app` from its installed location, enable it, and reopen the app. Developer ID signing (`tools/package_macos.py --identity ...`) provides a signing identity that can remain consistent across updates.
 
 Settings live in `~/Library/Application Support/dictation_hotkey/config.json`; temporary audio lives in `~/Library/Caches/dictation_hotkey/spool/` and is deleted when the session ends. The optional Start at Login setting uses macOS Login Items and must be enabled explicitly. Approve it in System Settings if macOS requests approval.
 

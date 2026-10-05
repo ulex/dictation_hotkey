@@ -10,6 +10,7 @@ unsafe extern "C" {
     pub fn dh_ui_error(text: *const c_char);
     pub fn dh_ui_config(config: *const c_char) -> i32;
     pub fn dh_output(text: *const c_char, mode: i32) -> i32;
+    pub fn dh_can_insert() -> i32;
     pub fn dh_capture(
         context: *mut c_void,
         stopped: extern "C" fn(*mut c_void) -> i32,

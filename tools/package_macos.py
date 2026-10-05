@@ -45,11 +45,14 @@ def main():
     contents = app / 'Contents'
     (contents / 'MacOS').mkdir(parents=True)
     (contents / 'Frameworks').mkdir()
+    (contents / 'Resources').mkdir()
     executable = contents / 'MacOS' / 'DictationHotkey'
     library = contents / 'Frameworks' / 'libDictationMac.dylib'
     shutil.copy2(binary, executable)
     shutil.copy2(adapter, library)
     shutil.copy2(root / 'resources/macos/Info.plist', contents / 'Info.plist')
+    for name in ['DictationHotkey.icns', 'menu-icon.png']:
+        shutil.copy2(root / 'resources/macos' / name, contents / 'Resources' / name)
     # Distribution must resolve the adapter inside the bundle, not the developer's Cargo directory.
     subprocess.run(['install_name_tool', '-delete_rpath', str(adapter.parent), str(executable)], check=True)
     subprocess.run(['codesign', '--force', '--sign', args.identity, str(library)], check=True)

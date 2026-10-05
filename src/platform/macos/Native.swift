@@ -194,17 +194,24 @@ public func capture(_ context: UnsafeMutableRawPointer?,
     return failed ? 1 : 0
 }
 
+// Event-posting permission is the permission CGEvent.post actually needs. Check it
+// afresh: approval can change while Settings is open or after a local rebuild.
+@_cdecl("dh_can_insert")
+public func canInsert() -> Int32 { CGPreflightPostEventAccess() ? 1 : 0 }
+
 @_cdecl("dh_output")
 public func output(_ text: UnsafePointer<CChar>, _ mode: Int32) -> Int32 {
     let value = String(cString: text)
-    if mode != 2 && !AXIsProcessTrusted() { return 1 }
+    if mode != 2 && canInsert() == 0 { return 2 }
+    // Don't inherit held shortcut modifiers from the user's keyboard state.
+    let source = CGEventSource(stateID: .privateState)
     if mode == 0 || mode == 2 {
         let board = NSPasteboard.general
         board.clearContents()
         guard board.setString(value, forType: .string) else { return 1 }
         if mode == 2 { return 0 }
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else { return 1 }
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return 1 }
         for event in [down, up] {
             event.flags = .maskCommand; event.setIntegerValueField(.eventSourceUserData, value: inputMark)
             event.post(tap: .cghidEventTap)
@@ -217,8 +224,8 @@ public func output(_ text: UnsafePointer<CChar>, _ mode: Int32) -> Int32 {
             if end < units.count && (0xD800...0xDBFF).contains(units[end - 1]) { end -= 1 }
             let chunk = Array(units[start..<end])
             start = end
-            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { return 1 }
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return 1 }
             for event in [down, up] {
                 event.flags = []
                 event.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
@@ -270,6 +277,9 @@ private final class Shell: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     var statusItem: NSMenuItem!
     var batchItem: NSMenuItem!
+    var insertionItem: NSMenuItem!
+    var insertionAllowed: Bool?
+    var nextPermissionCheck = Date.distantPast
     var activeShortcut = ""
     var hotkeyRef: EventHotKeyRef?
     var handler: EventHandlerRef?
@@ -293,7 +303,18 @@ private final class Shell: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Dictate"
+        item.button?.title = ""
+        if let url = Bundle.main.url(forResource: "menu-icon", withExtension: "png"),
+           let icon = NSImage(contentsOf: url) {
+            icon.size = NSSize(width: 18, height: 18)
+            icon.isTemplate = false
+            item.button?.image = icon
+        } else {
+            item.button?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Dictation Hotkey")
+        }
+        item.button?.imagePosition = .imageOnly
+        item.button?.setAccessibilityLabel("Dictation Hotkey")
+        item.button?.toolTip = "Dictation Hotkey"
         let menu = NSMenu()
         statusItem = NSMenuItem(title: "Ready", action: nil, keyEquivalent: "")
         menu.addItem(statusItem)
@@ -306,7 +327,8 @@ private final class Shell: NSObject, NSApplicationDelegate {
         batchItem.state = config["offline_mode"] as? Bool == true ? .on : .off
         add(menu, "Settings…", #selector(settings))
         add(menu, "Logs…", #selector(showLogs))
-        add(menu, "Enable Text Insertion…", #selector(accessibility))
+        insertionItem = add(menu, "Enable Text Insertion…", #selector(accessibility))
+        refreshInsertionPermission()
         menu.addItem(.separator())
         add(menu, "Quit", #selector(quit))
         item.menu = menu
@@ -325,7 +347,13 @@ private final class Shell: NSObject, NSApplicationDelegate {
             if event.keyCode == 53 && self.busy && !self.dialog { self.invoke(2) }
             return event
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in self.invoke(6) }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            if Date() >= self.nextPermissionCheck {
+                self.refreshInsertionPermission()
+                self.nextPermissionCheck = Date().addingTimeInterval(1)
+            }
+            self.invoke(6)
+        }
         if (config["api_key"] as? String ?? "").isEmpty { settings() }
     }
     @discardableResult func add(_ menu: NSMenu, _ title: String, _ selector: Selector) -> NSMenuItem {
@@ -369,7 +397,7 @@ private final class Shell: NSObject, NSApplicationDelegate {
     func status(_ message: String, _ active: Bool) {
         busy = active
         statusItem?.title = message
-        item?.button?.title = active ? "● Dictate" : "Dictate"
+        item?.button?.toolTip = "Dictation Hotkey: \(message)"
         if logs.last != message { logs.append(message) }
         if logs.count > 100 { logs.removeFirst() }
         if active {
@@ -418,10 +446,24 @@ private final class Shell: NSObject, NSApplicationDelegate {
             windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0)!, atStart: false)
     }
     @objc func accessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            error("Enable Dictation Hotkey under System Settings > Privacy & Security > Accessibility. Microphone permission is requested when recording starts. Escape outside the app also requires permission to monitor keyboard input; the shortcut and menu Stop remain available.")
+        if canInsert() == 0 {
+            _ = CGRequestPostEventAccess()
+            if canInsert() == 0,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
         }
+        refreshInsertionPermission()
+    }
+    func refreshInsertionPermission() {
+        let allowed = canInsert() != 0
+        insertionItem?.state = allowed ? .on : .off
+        insertionItem?.title = allowed ? "Text Insertion Enabled" : "Enable Text Insertion…"
+        guard insertionAllowed != allowed else { return }
+        insertionAllowed = allowed
+        logs.append(allowed ? "Text insertion permission verified for the running app" :
+            "Text insertion permission missing for the running app. Enable it in Accessibility; after a local rebuild, remove the old entry and add the current app again, then quit and reopen it.")
+        if logs.count > 100 { logs.removeFirst() }
     }
     @objc func showLogs() {
         dialog = true; defer { dialog = false }
