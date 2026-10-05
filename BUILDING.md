@@ -1,6 +1,6 @@
 # Building and validating Dictation Hotkey
 
-Windows 10/11 x64 Rust implementation of Dictation Hotkey. This is the only application implementation in the repository; the legacy Python/Qt app and build pipeline have been removed. The app keeps the existing `%APPDATA%/dictation_hotkey/config.json` settings format and uses Win32 UI, WASAPI capture, WinHTTP networking, bounded session state, and native clipboard/SendInput output.
+Windows 10/11 x64 and macOS 13+ native implementation of Dictation Hotkey. This is the only application implementation in the repository; the legacy Python/Qt app and build pipeline have been removed. Both platforms use the shared Rust session workers, config, protocol and bounded temporary WAV spool. Windows keeps the existing `%APPDATA%/dictation_hotkey/config.json` settings format and uses Win32 UI, WASAPI capture, WinHTTP networking and clipboard/SendInput output. macOS supplies AppKit, AVAudioEngine, URLSession and CGEvent adapters.
 
 ## What is implemented
 
@@ -53,6 +53,40 @@ target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
 Package it as `DictationHotkey.exe` for distribution. Python and Qt are not required to build or run it.
 
 `tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
+
+## macOS build and packaging
+
+Install Xcode Command Line Tools and Rust 1.99.0. Swift is supplied by the Apple tools; no additional Rust dependencies are needed for macOS. Build.rs compiles the native Swift framework adapter only for macOS targets.
+
+```sh
+xcode-select --install
+rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+python3 tools/package_macos.py
+```
+
+The packager builds for the host architecture, assembles a `.app` with the Rust executable and Swift dylib, removes the development library search path, signs and verifies the bundle, and creates an architecture-specific ZIP and checksum. The app requires macOS 13+ (Login Items uses ServiceManagement). Python is only used for packaging, never at runtime.
+
+Use `--target aarch64-apple-darwin` or `--target x86_64-apple-darwin` to select an architecture; install that Rust target first. Cross-building the macOS adapter requires an Apple SDK and Swift toolchain on macOS. Existing output bundles are not overwritten; move them aside before packaging again.
+
+Default signing is ad-hoc, suitable for local builds. Pass `--identity 'Developer ID Application: …'` for distribution signing. Public distribution additionally requires Apple's notarization and stapling workflow; CI artifacts are not notarized. The bundle declares [microphone usage](https://developer.apple.com/documentation/avfaudio/avaudioapplication/requestrecordpermission%28completionhandler%3A%29) and the hardened-runtime audio-input entitlement. Microphone and Accessibility approvals are interactive and are not exercised by CI.
+
+For development, `cargo run --locked` locates the Swift dylib in Cargo's build output and embeds the microphone privacy declaration. For normal use, install the bundle in Applications so its identity, permissions and login item remain stable.
+
+macOS adapters retain the shared 16 kHz mono PCM16 format, bounded queues, session tickets, fallback policy and WAV limits. Multipart upload is staged into a private temporary file and streamed by URLSession, with a maximum disk cost of roughly two bounded WAVs, rather than loading audio into memory. Responses and WebSocket messages are bounded, redirects are disabled, and cancellation closes native network tasks. Unknown config fields and the first pre-native backup remain preserved. Mac shortcut and login fields are separate from Windows settings.
+
+## macOS manual validation
+
+Non-interactive tests do not record audio, upload to Mistral, modify the clipboard, inject text or register a login item. Before release, verify on both Apple Silicon and Intel:
+
+- First-run Settings and menu/overlay behavior; one running instance; unavailable shortcut and settings rollback.
+- Microphone approval/denial and missing/disconnected input devices; 16 kHz mono PCM16 conversion.
+- Accessibility approval/denial; paste and Unicode insertion (including emoji) into a controlled editor; clipboard-only recording and Copy Last Text.
+- Authenticated realtime and batch sessions; custom endpoint; disconnect before/after partial insertion, ensuring no duplicate fallback insertion.
+- Shortcut repeats, Escape permission behavior, stopping during startup, quit during recording/upload, and deleted temporary files.
+- Explicit Login Item enable/disable, approval, failure rollback, relaunch, and running the package on a clean machine without developer tools.
 
 ## Validation status
 

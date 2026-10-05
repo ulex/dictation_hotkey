@@ -1,4 +1,6 @@
 use serde_json::{Map, Value};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{fs, io, path::Path};
 
 pub const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -13,7 +15,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let fields = serde_json::from_str::<Value>(
-            r#"{"api_key":"","hotkey_copilot":false,"hotkey_win_h":true,"hotkey_custom":"","language":"","typing_mode":"paste","paste_shortcut":"shift_insert","start_with_windows":false,"offline_mode":false,"model":"","offline_model":"","base_url":""}"#,
+            r#"{"api_key":"","hotkey_copilot":false,"hotkey_win_h":true,"hotkey_custom":"","hotkey_macos":"Ctrl+Alt+D","language":"","typing_mode":"paste","paste_shortcut":"shift_insert","start_with_windows":false,"start_at_login":false,"offline_mode":false,"model":"","offline_model":"","base_url":""}"#,
         )
         .expect("static JSON")
         .as_object()
@@ -89,11 +91,11 @@ impl Config {
         // Preserve the first legacy configuration before native changes. Never overwrite it.
         if path.exists() {
             let backup = parent.join("config.pre-native.json");
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&backup)
-            {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&backup) {
                 Ok(mut dest) => {
                     use io::{Read, Write};
                     let result = (|| {
@@ -124,11 +126,11 @@ impl Config {
         let mut i = 0;
         loop {
             let temp = parent.join(format!(".config-{}-{i}.tmp", std::process::id()));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-            {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&temp) {
                 Ok(mut file) => {
                     use io::Write;
                     let result = (|| {
@@ -149,6 +151,10 @@ impl Config {
     }
 
     pub fn validate(&self) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        if !crate::hotkey::valid_macos(self.string("hotkey_macos")) {
+            return Err(io::Error::other("invalid macOS shortcut (use Control, Option, Command or Shift + letter, digit or F1–F20)"));
+        }
         let custom = self.string("hotkey_custom");
         if !custom.is_empty() && crate::hotkey::parse(custom).is_none() {
             return Err(io::Error::other(
@@ -190,6 +196,11 @@ impl Config {
             return Err(io::Error::other("invalid API key"));
         }
         Ok(())
+    }
+
+    /// Serialized view for native settings adapters; unknown fields are retained.
+    pub fn to_json(&self) -> io::Result<String> {
+        serde_json::to_string(&self.fields).map_err(io::Error::other)
     }
 
     pub fn string(&self, name: &str) -> &str {
@@ -311,6 +322,25 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_dir_all(directory).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn configuration_and_backup_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("dh-private-config-{}", std::process::id()));
+        let path = directory.join("config.json");
+        let config = Config::default();
+        config.save(&path).unwrap();
+        config.save(&path).unwrap();
+        for file in [&path, &directory.join("config.pre-native.json")] {
+            assert_eq!(
+                fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn reject_oversized_and_malformed() {
         assert!(Config::from_bytes(&vec![b'x'; MAX_CONFIG_BYTES as usize + 1]).is_err());

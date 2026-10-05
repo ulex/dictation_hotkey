@@ -42,10 +42,10 @@ impl Spool {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let recognizable = path.file_name().and_then(|s| s.to_str()).is_some_and(|s| {
-                    s.len() == 39
-                        && s.starts_with("dh-")
-                        && s.ends_with(".wav")
-                        && s.as_bytes()[3..35].iter().all(u8::is_ascii_hexdigit)
+                    let token = s
+                        .strip_prefix("dh-")
+                        .and_then(|s| s.strip_suffix(".wav").or_else(|| s.strip_suffix(".upload")));
+                    token.is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
                 });
                 if recognizable {
                     fs::remove_file(path).map_err(|_| {
@@ -197,11 +197,16 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let stale = dir.join("dh-0123456789abcdef0123456789abcdef.wav");
         fs::write(&stale, b"audio fixture").unwrap();
+        let upload = dir.join("dh-0123456789abcdef0123456789abcdef.upload");
+        fs::write(&upload, b"multipart audio fixture").unwrap();
+        fs::write(dir.join("other.upload"), b"not ours").unwrap();
         fs::write(dir.join("other.wav"), b"not ours").unwrap();
         // A non-ASCII filename with a similar byte length must never panic or be removed.
         fs::write(dir.join("dh-😀😀😀😀😀😀😀😀.wav"), b"not ours").unwrap();
         let spool = Spool::create(&dir).unwrap();
         assert!(!stale.exists());
+        assert!(!upload.exists());
+        assert!(dir.join("other.upload").exists());
         assert!(dir.join("other.wav").exists());
         drop(spool);
         fs::remove_dir_all(dir).unwrap();

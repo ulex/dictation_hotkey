@@ -55,6 +55,23 @@ pub fn parse(text: &str) -> Option<Hotkey> {
     })
 }
 
+/// macOS uses Carbon physical key codes, with Command/Option aliases and F1–F20.
+/// Keep Windows parser semantics unchanged for existing configurations.
+pub fn valid_macos(text: &str) -> bool {
+    let normalized = text
+        .split('+')
+        .map(|token| match token.trim().to_ascii_uppercase().as_str() {
+            "CMD" | "COMMAND" => "WIN".to_owned(),
+            "OPTION" => "ALT".to_owned(),
+            "WIN" | "WINDOWS" => String::new(),
+            other => other.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("+");
+    parse(&normalized)
+        .is_some_and(|key| key.vk <= 0x83 && !(key.modifiers == WIN && key.vk == u32::from(b'V')))
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Action {
     Toggle,
@@ -280,5 +297,28 @@ mod tests {
         ] {
             assert_eq!(parse(value), None, "{value}");
         }
+    }
+}
+
+#[cfg(test)]
+mod macos_tests {
+    #[test]
+    fn native_shortcut_aliases_and_limits() {
+        for value in ["Ctrl+Alt+D", "Command+Shift+F20", "Option+9"] {
+            assert!(super::valid_macos(value));
+        }
+        for value in [
+            "D",
+            "Win+H",
+            "Cmd+Command+D",
+            "Ctrl+F21",
+            "Ctrl++D",
+            "Option+Unknown",
+            "Cmd+V",
+        ] {
+            assert!(!super::valid_macos(value));
+        }
+        assert!(super::parse("Command+D").is_none());
+        assert!(super::parse("Win+H").is_some());
     }
 }

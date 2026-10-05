@@ -53,3 +53,45 @@ jobs:
             dist/DictationHotkey-win64.zip
             dist/SHA256SUMS.txt
           token: ${{ secrets.PUB_TOKEN }}
+
+  macos-release:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - name: Format and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Non-interactive tests
+        run: cargo test --locked
+      - name: Build and package macOS app
+        run: python3 tools/package_macos.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictationHotkey-macos-${{ matrix.arch }}
+          path: |
+            dist/DictationHotkey-macos-${{ matrix.arch }}.zip
+            dist/SHA256SUMS-macos-${{ matrix.arch }}.txt
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            dist/DictationHotkey-macos-${{ matrix.arch }}.zip
+            dist/SHA256SUMS-macos-${{ matrix.arch }}.txt
+          token: ${{ secrets.PUB_TOKEN }}

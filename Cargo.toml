@@ -3,7 +3,7 @@ name = "dictation-hotkey-native"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Native Windows streaming dictation with WASAPI and WinHTTP"
+description = "Native streaming dictation for Windows and macOS"
 
 [dependencies]
 serde_json = "1"

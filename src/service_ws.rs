@@ -2,17 +2,13 @@
 //! handle-close watchdogs cancel pending operations without blocking the UI thread.
 use crate::{
     network_handle::Handle,
-    protocol::{self, Assembler, Event},
+    protocol::{Assembler, Event},
     wire,
 };
 use std::{
     io,
     ptr::{null, null_mut},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, RecvTimeoutError},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, mpsc::Receiver, Arc},
     time::Duration,
 };
 use windows_sys::Win32::Networking::WinHttp::*;
@@ -91,7 +87,7 @@ pub fn realtime(
     base: &str,
     audio: Receiver<Vec<u8>>,
     cancelled: Arc<AtomicBool>,
-    mut delta: impl FnMut(String) -> io::Result<()> + Send + 'static,
+    delta: impl FnMut(String) -> io::Result<()> + Send + 'static,
 ) -> io::Result<()> {
     let (host, port, path) = wire::endpoint(base, model)?;
     if api_key.is_empty() || api_key.chars().any(|c| c.is_control()) {
@@ -185,94 +181,33 @@ pub fn realtime(
             "WebSocket upgrade",
         )?);
         drop(request_watch);
-        let handshake_watch = ws.watch(cancelled.clone(), Duration::from_secs(15))?;
-        loop {
-            match recv(&ws)? {
-                Event::Created => break,
-                Event::Error(_) => {
-                    return Err(io::Error::other("realtime service rejected session"))
-                }
-                Event::Delta(text) => delta(text)?,
-                Event::Done => return Err(io::Error::other("realtime ended during handshake")),
-                Event::Unknown => (),
+        crate::realtime::stream(ws, audio, cancelled, delta)
+    }
+}
+impl crate::realtime::Transport for Handle {
+    type Watch = crate::network_handle::Watchdog;
+    fn send(&self, message: &str) -> io::Result<()> {
+        send(self, message)
+    }
+    fn receive(&self) -> io::Result<Event> {
+        recv(self)
+    }
+    fn close(&self) {
+        Handle::close(self);
+    }
+    fn finish(&self) {
+        if let Ok(raw) = self.raw() {
+            unsafe {
+                let _ = WinHttpWebSocketShutdown(raw, 1000, null(), 0);
             }
         }
-        send(&ws, &protocol::session_update().to_string())?;
-        drop(handshake_watch);
-        let _lifetime_watch = ws.watch(
-            cancelled.clone(),
-            Duration::from_secs(crate::spool::MAX_SECONDS + 60),
-        )?;
-        let finished = Arc::new(AtomicBool::new(false));
-        let sent_end = Arc::new(AtomicBool::new(false));
-        let recv_ws = ws.clone();
-        let recv_finished = finished.clone();
-        let recv_end = sent_end.clone();
-        let reader = std::thread::Builder::new()
-            .name("dictation-receiver".into())
-            .spawn(move || {
-                let result = (|| loop {
-                    match recv(&recv_ws)? {
-                        Event::Delta(text) => delta(text)?,
-                        Event::Done if recv_end.load(Ordering::Acquire) => return Ok(()),
-                        Event::Done => {
-                            return Err(io::Error::other(
-                                "realtime ended before microphone stopped",
-                            ))
-                        }
-                        Event::Error(_) => return Err(io::Error::other("realtime service error")),
-                        _ => (),
-                    }
-                })();
-                recv_finished.store(true, Ordering::Release);
-                if result.is_err() {
-                    recv_ws.close();
-                }
-                result
-            })?;
-        let sending = (|| {
-            for _ in 0..20 {
-                if cancelled.load(Ordering::Acquire) || finished.load(Ordering::Acquire) {
-                    return Err(io::Error::other("realtime interrupted"));
-                }
-                send(&ws, &wire::append(&[0; 3200])?)?;
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            loop {
-                if cancelled.load(Ordering::Acquire) || finished.load(Ordering::Acquire) {
-                    return Err(io::Error::other("realtime interrupted"));
-                }
-                match audio.recv_timeout(Duration::from_millis(50)) {
-                    Ok(pcm) => send(&ws, &wire::append(&pcm)?)?,
-                    Err(RecvTimeoutError::Timeout) => (),
-                    Err(RecvTimeoutError::Disconnected) => break,
-                }
-            }
-            send(&ws, &protocol::flush().to_string())?;
-            sent_end.store(true, Ordering::Release);
-            send(&ws, &protocol::end().to_string())
-        })();
-        if sending.is_err() {
-            ws.close();
-        }
-        let final_watch = match ws.watch(cancelled, Duration::from_secs(30)) {
-            Ok(watch) => watch,
-            Err(e) => {
-                ws.close();
-                let _ = reader.join();
-                return Err(e);
-            }
-        };
-        let received = reader
-            .join()
-            .map_err(|_| io::Error::other("realtime receiver crashed"));
-        drop(final_watch);
-        // Shutdown is a send operation, so only do it after sender and receiver have ended.
-        if let Ok(raw) = ws.raw() {
-            let _ = WinHttpWebSocketShutdown(raw, 1000, null(), 0);
-        }
-        ws.close();
-        sending?;
-        received?
+        self.close();
+    }
+    fn watch(
+        self: &Arc<Self>,
+        cancelled: Arc<AtomicBool>,
+        timeout: Duration,
+    ) -> io::Result<Self::Watch> {
+        Handle::watch(self, cancelled, timeout)
     }
 }
