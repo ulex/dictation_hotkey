@@ -1,9 +1,13 @@
 //! Event-driven shared-mode WASAPI. The Windows Audio Engine performs high-quality
 //! channel/sample-rate conversion to 16 kHz mono PCM16; unsupported devices fail explicitly.
-use crate::spool::{MAX_AUDIO_BYTES, SAMPLE_RATE};
+use crate::{
+    logs_ui,
+    spool::{MAX_AUDIO_BYTES, SAMPLE_RATE},
+};
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 use windows::Win32::{
     Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -62,6 +66,7 @@ unsafe fn capture_inner(
     client
         .Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1_000_000, 0, &format, None)
         .map_err(error)?;
+    let buffer_frames = client.GetBufferSize().map_err(error)?;
     let event = CreateEventW(None, false, false, None).map_err(error)?;
     let result = (|| {
         client.SetEventHandle(event).map_err(error)?;
@@ -70,42 +75,59 @@ unsafe fn capture_inner(
             return Ok(());
         }
         client.Start().map_err(error)?;
+        let started = Instant::now();
+        logs_ui::log(&format!(
+            "WASAPI capture started (16 kHz mono, shared/event, buffer: {buffer_frames} frames)"
+        ));
         let result = (|| {
             let mut pending = Vec::with_capacity(3200);
             let mut total = 0u64;
             let mut first = true;
-            let mut stopped = false;
+            let mut last_end = None::<u64>;
+            let mut packets = 0u64;
+            let mut timeouts = 0u64;
+            let mut last_packet_at = started;
+            let mut max_packet_gap_ms = 0u128;
             loop {
-                if !stopped {
-                    if stop.load(Ordering::Acquire) {
-                        client.Stop().map_err(error)?;
-                        stopped = true; // drain the final buffered microphone packets below
-                    } else {
-                        let wait = WaitForSingleObject(event, 100);
-                        if wait == WAIT_TIMEOUT {
-                            continue;
-                        }
-                        if wait != WAIT_OBJECT_0 {
-                            return Err(io::Error::other("microphone event wait failed"));
-                        }
+                // Drain *before* Stop. Some capture drivers flag the next GetBuffer after
+                // IAudioClient::Stop as a discontinuity even though the live stream was intact.
+                if !stop.load(Ordering::Acquire) {
+                    let wait = WaitForSingleObject(event, 100);
+                    if wait == WAIT_TIMEOUT {
+                        timeouts += 1;
+                        continue;
+                    }
+                    if wait != WAIT_OBJECT_0 {
+                        return Err(io::Error::other("microphone event wait failed"));
                     }
                 }
                 while reader.GetNextPacketSize().map_err(error)? != 0 {
                     let mut data = std::ptr::null_mut();
                     let mut frames = 0;
                     let mut flags = 0;
+                    let mut position = 0u64;
                     reader
-                        .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+                        .GetBuffer(
+                            &mut data,
+                            &mut frames,
+                            &mut flags,
+                            Some(&mut position),
+                            None,
+                        )
                         .map_err(error)?;
+                    let now = Instant::now();
+                    max_packet_gap_ms =
+                        max_packet_gap_ms.max(now.duration_since(last_packet_at).as_millis());
+                    last_packet_at = now;
+                    packets += 1;
                     let copied = (|| {
                         if frames > SAMPLE_RATE {
                             return Err(io::Error::other("oversized microphone packet"));
                         }
                         if !first && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
                             return Err(io::Error::other(format!(
-                                "microphone discontinuity reported by WASAPI (packet: {frames} frames; captured: {} frames / {} bytes); audio was dropped by the audio engine, so recording is incomplete. Check for microphone/device resets, CPU load, and audio-driver issues",
-                                total / 2,
-                                total,
+                                "WASAPI reported lost microphone audio during capture (elapsed: {} ms; stop requested: {}; packet: {frames} frames, flags: 0x{flags:x}; device position: {position}, previous end: {last_end:?}; captured: {} frames; packets: {packets}; buffer: {buffer_frames} frames; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms). Recording incomplete",
+                                started.elapsed().as_millis(), stop.load(Ordering::Acquire), total / 2,
                             )));
                         }
                         if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
@@ -120,6 +142,7 @@ unsafe fn capture_inner(
                     })();
                     reader.ReleaseBuffer(frames).map_err(error)?;
                     first = false;
+                    last_end = position.checked_add(u64::from(frames));
                     for sample in copied?.as_chunks::<2>().0 {
                         if total == MAX_AUDIO_BYTES {
                             stop.store(true, Ordering::Release);
@@ -136,16 +159,24 @@ unsafe fn capture_inner(
                 if total == MAX_AUDIO_BYTES {
                     stop.store(true, Ordering::Release);
                 }
-                if stopped {
+                if stop.load(Ordering::Acquire) {
                     break;
                 }
             }
+            // No more GetBuffer calls after Stop: stopping can invalidate queued packets.
+            client.Stop().map_err(error)?;
             if !pending.is_empty() {
                 output(&pending)?;
             }
+            logs_ui::log(&format!(
+                "WASAPI capture stopped (elapsed: {} ms; captured: {} frames; packets: {packets}; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms)",
+                started.elapsed().as_millis(), total / 2,
+            ));
             Ok(())
         })();
-        let _ = client.Stop();
+        if result.is_err() {
+            let _ = client.Stop();
+        }
         result
     })();
     let _ = CloseHandle(event);
