@@ -2,8 +2,8 @@
 use crate::{protocol::MAX_AUDIO_FRAME, session::MAX_TRANSCRIPT_BYTES};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::io;
-pub const DEFAULT_MODEL: &str = "voxtral-mini-transcribe-realtime-2602";
-pub const DEFAULT_BATCH_MODEL: &str = "voxtral-mini-latest";
+pub const DEFAULT_MODEL: &str = "voxtral-mini-transcribe-realtime-3-0";
+pub const DEFAULT_BATCH_MODEL: &str = "voxtral-mini-transcribe-3-0";
 pub const DEFAULT_URL: &str = "wss://api.mistral.ai";
 pub fn valid_model(model: &str) -> bool {
     !model.is_empty()
@@ -95,6 +95,54 @@ impl Multipart {
         })
     }
 }
+/// Only emit known, non-sensitive provider error identifiers. Never surface the response
+/// message/body: validation messages may echo request fields (including credentials).
+pub fn batch_error(status: u32, model: &str, wav_bytes: u64, body: &[u8]) -> String {
+    let mut result = format!("batch API HTTP {status} (model: {model}, WAV bytes: {wav_bytes})");
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) {
+        let detail = json
+            .get("detail")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first());
+        let error = json.get("error");
+        let kind = [detail, error, Some(&json)]
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.get("type").or_else(|| v.get("code")))
+            .filter_map(|v| v.as_str())
+            .find(|v| {
+                matches!(
+                    *v,
+                    "invalid_request_error"
+                        | "invalid_model"
+                        | "model_not_found"
+                        | "invalid_api_key"
+                        | "unauthorized"
+                        | "rate_limit_exceeded"
+                        | "validation_error"
+                        | "value_error"
+                        | "missing"
+                        | "extra_forbidden"
+                )
+            });
+        if let Some(kind) = kind {
+            result.push_str(&format!("; provider type: {kind}"));
+        }
+        if let Some(field) = detail
+            .and_then(|v| v.get("loc"))
+            .and_then(|v| v.as_array())
+            .and_then(|loc| {
+                loc.iter()
+                    .filter_map(|v| v.as_str())
+                    .find(|v| matches!(*v, "model" | "file" | "language"))
+            })
+        {
+            result.push_str(&format!("; field: {field}"));
+        }
+    }
+    result.push_str(". Check batch model, WAV format, API key and quota in Settings.");
+    result
+}
 pub fn batch_text(body: &[u8]) -> io::Result<String> {
     if body.len() > MAX_TRANSCRIPT_BYTES + 64 * 1024 {
         return Err(io::Error::other("batch response exceeds limit"));
@@ -150,6 +198,17 @@ mod tests {
         assert!(Multipart::new("bad\r\n", "model", 0).is_err());
         assert!(Multipart::new("good", "bad\r\nmodel", 0).is_err());
         assert!(Multipart::new("good", "model", u64::MAX).is_err());
+    }
+    #[test]
+    fn safe_batch_diagnostics() {
+        let error = batch_error(400, "voxtral-small-latest", 1234,
+            br#"{"detail":[{"type":"missing","loc":["body","file"],"msg":"secret key and transcript"}]}"#);
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("provider type: missing; field: file"));
+        assert!(!error.contains("secret"));
+        assert!(
+            !batch_error(400, "model", 0, br#"{"error":{"code":"secret"}}"#).contains("secret")
+        );
     }
     #[test]
     fn bounded_batch_reply() {

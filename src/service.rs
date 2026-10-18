@@ -57,8 +57,9 @@ pub fn batch(
         return Err(io::Error::other("cancelled"));
     }
     let mut file = File::open(wav)?;
+    let wav_bytes = file.metadata()?.len();
     let boundary = format!("dh-{}", random_name()?);
-    let multipart = Multipart::new(&boundary, model, file.metadata()?.len())?;
+    let multipart = Multipart::new(&boundary, model, wav_bytes)?;
     unsafe {
         let session = Handle::new(
             WinHttpOpen(
@@ -155,11 +156,6 @@ pub fn batch(
         {
             return Err(err("HTTP status"));
         }
-        if status != 200 {
-            return Err(io::Error::other(format!(
-                "batch API HTTP {status} (check API key, quota and model)"
-            )));
-        }
         let mut body = Vec::new();
         loop {
             let mut count = 0;
@@ -175,10 +171,28 @@ pub fn batch(
             if count == 0 {
                 break;
             }
-            if body.len() + count as usize > crate::session::MAX_TRANSCRIPT_BYTES + 65536 {
+            let limit = if status == 200 {
+                crate::session::MAX_TRANSCRIPT_BYTES + 65536
+            } else {
+                16 * 1024
+            };
+            if body.len() + count as usize > limit {
+                if status != 200 {
+                    return Err(io::Error::other(crate::wire::batch_error(
+                        status,
+                        model,
+                        wav_bytes,
+                        &[],
+                    )));
+                }
                 return Err(io::Error::other("response exceeds limit"));
             }
             body.extend_from_slice(&block[..count as usize]);
+        }
+        if status != 200 {
+            return Err(io::Error::other(crate::wire::batch_error(
+                status, model, wav_bytes, &body,
+            )));
         }
         batch_text(&body)
     }

@@ -25,7 +25,7 @@ pub fn w(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 pub unsafe fn scale(hwnd: HWND, value: i32) -> i32 {
-    (value as i64 * GetDpiForWindow(hwnd).max(96) as i64 / 96) as i32
+    (value as i64 * GetDpiForWindow(hwnd) as i64 / 96) as i32
 }
 pub unsafe fn high_contrast() -> bool {
     use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
@@ -81,7 +81,7 @@ pub unsafe fn theme(hwnd: HWND) -> Option<&'static Theme> {
     (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Theme).as_ref()
 }
 pub unsafe fn attach(hwnd: HWND, mono_edit: bool) {
-    let theme = Box::new(Theme::new(GetDpiForWindow(hwnd).max(96), mono_edit));
+    let theme = Box::new(Theme::new(GetDpiForWindow(hwnd), mono_edit));
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(theme) as isize);
     // Best effort: Windows 11 rounds the frame; Windows 10 simply ignores this.
     let corner = DWMWCP_ROUND;
@@ -115,7 +115,7 @@ unsafe extern "system" fn update_child(child: HWND, parent: LPARAM) -> i32 {
 }
 pub unsafe fn dpi_changed(hwnd: HWND, lp: LPARAM) {
     let mono_edit = theme(hwnd).is_some_and(|t| t.mono_edit);
-    let new = Box::new(Theme::new(GetDpiForWindow(hwnd).max(96), mono_edit));
+    let new = Box::new(Theme::new(GetDpiForWindow(hwnd), mono_edit));
     let old = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(new) as isize) as *mut Theme;
     EnumChildWindows(hwnd, Some(update_child), hwnd as LPARAM);
     // Controls have switched fonts before the old ones are released.
@@ -145,14 +145,21 @@ pub unsafe fn colors(msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     let child = lp as HWND;
     let muted = (910..=919).contains(&GetDlgCtrlID(child))
         || windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(child) == 0;
-    SetTextColor(
-        dc,
-        GetSysColor(if muted {
-            COLOR_GRAYTEXT
-        } else {
-            COLOR_WINDOWTEXT
-        }),
-    );
+    let heading = (901..=909).contains(&GetDlgCtrlID(child));
+    // Preserve the native edit control's text color so themed cue banners retain
+    // their muted color instead of inheriting the normal foreground color.
+    if msg != WM_CTLCOLOREDIT {
+        SetTextColor(
+            dc,
+            GetSysColor(if muted {
+                COLOR_GRAYTEXT
+            } else if heading && !high_contrast() {
+                COLOR_HIGHLIGHT
+            } else {
+                COLOR_WINDOWTEXT
+            }),
+        );
+    }
     SetBkColor(dc, GetSysColor(COLOR_WINDOW));
     Some(GetSysColorBrush(COLOR_WINDOW) as LRESULT)
 }
@@ -187,7 +194,7 @@ pub unsafe fn client_size(hwnd: HWND, width: i32, height: i32) {
         GetWindowLongW(hwnd, GWL_STYLE) as u32,
         0,
         GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
-        GetDpiForWindow(hwnd).max(96),
+        GetDpiForWindow(hwnd),
     );
     SetWindowPos(
         hwnd,
@@ -208,6 +215,30 @@ pub unsafe fn move_control(hwnd: HWND, id: i32, x: i32, y: i32, width: i32, heig
         scale(hwnd, height),
         1,
     );
+}
+pub unsafe fn paint_settings(hwnd: HWND, headers: &[i32]) {
+    let mut paint: PAINTSTRUCT = zeroed();
+    let dc = BeginPaint(hwnd, &mut paint);
+    let mut rect: RECT = zeroed();
+    GetClientRect(hwnd, &mut rect);
+    FillRect(dc, &rect, GetSysColorBrush(COLOR_WINDOW));
+    for &id in headers {
+        let mut header: RECT = zeroed();
+        if GetWindowRect(GetDlgItem(hwnd, id), &mut header) != 0 {
+            MapWindowPoints(null_mut(), hwnd, &mut header as *mut _ as _, 2);
+            let line = RECT {
+                left: header.left,
+                top: header.bottom + scale(hwnd, 2),
+                right: header.right,
+                bottom: header.bottom + scale(hwnd, 3).max(1),
+            };
+            FillRect(dc, &line, GetSysColorBrush(COLOR_3DLIGHT));
+        }
+    }
+    rect.top = scale(hwnd, 560);
+    rect.bottom = rect.top + scale(hwnd, 1).max(1);
+    FillRect(dc, &rect, GetSysColorBrush(COLOR_3DLIGHT));
+    EndPaint(hwnd, &paint);
 }
 pub unsafe fn paint_footer(hwnd: HWND, y: i32) {
     let mut paint: PAINTSTRUCT = zeroed();

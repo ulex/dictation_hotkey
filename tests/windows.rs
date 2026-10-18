@@ -25,7 +25,7 @@ use windows_sys::Win32::{
 };
 fn test_exe() -> std::ffi::OsString {
     std::env::var_os("DICTATION_TEST_EXE")
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_dictation-hotkey-native").into())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_DictationHotkey").into())
 }
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()

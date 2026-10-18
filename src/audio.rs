@@ -102,9 +102,11 @@ unsafe fn capture_inner(
                             return Err(io::Error::other("oversized microphone packet"));
                         }
                         if !first && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
-                            return Err(io::Error::other(
-                                "microphone discontinuity; recording incomplete",
-                            ));
+                            return Err(io::Error::other(format!(
+                                "microphone discontinuity reported by WASAPI (packet: {frames} frames; captured: {} frames / {} bytes); audio was dropped by the audio engine, so recording is incomplete. Check for microphone/device resets, CPU load, and audio-driver issues",
+                                total / 2,
+                                total,
+                            )));
                         }
                         if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
                             Ok(vec![0u8; frames as usize * 2])

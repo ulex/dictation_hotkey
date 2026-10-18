@@ -1,4 +1,4 @@
-# Compact, antialiased versions of the original green/red/amber status balls.
+# Compact, antialiased circular tray status icons.
 # Uses only Windows' built-in System.Drawing; no build/runtime dependency.
 param([string]$OutputDirectory = (Join-Path $PSScriptRoot '..\resources'))
 Add-Type -AssemblyName System.Drawing
@@ -10,7 +10,7 @@ function New-IconFrame([int]$Size, [string]$Color) {
     $g = [Drawing.Graphics]::FromImage($canvas)
     $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $brush = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml($Color))
-    # Original silhouette, with a one-pixel transparent margin at 16px.
+    # One transparent pixel at 16px; draw at 4x for smooth edges at all tray DPIs.
     $margin = $Size / 4.0
     $g.FillEllipse($brush, $margin, $margin, $Size * 4 - 2 * $margin, $Size * 4 - 2 * $margin)
     $frame = [Drawing.Bitmap]::new($Size, $Size)

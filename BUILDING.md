@@ -47,7 +47,7 @@ cargo xwin build --release --locked --target x86_64-pc-windows-msvc
 The release executable is:
 
 ```text
-target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe
+target/x86_64-pc-windows-msvc/release/DictationHotkey.exe
 ```
 
 Package it as `DictationHotkey.exe` for distribution. Python and Qt are not required to build or run it.

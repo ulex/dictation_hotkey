@@ -142,7 +142,7 @@ fn win_h_triggers_app_without_start_menu_or_leaked_h() {
             assert!(GetAsyncKeyState(vk) >= 0, "release held modifiers");
         }
         let exe = std::env::var_os("DICTATION_TEST_EXE")
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_dictation-hotkey-native").into());
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_DictationHotkey").into());
         let mut child = Child(std::process::Command::new(exe).spawn().unwrap());
         wait_for("first-run Settings", || {
             !window("DictationHotkeyNativeSettings").is_null()

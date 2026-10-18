@@ -1,5 +1,5 @@
 //! Native settings: themed controls, clear sections, DPI-aware layout and tab navigation.
-use crate::{config::Config, ui};
+use crate::{config::Config, ui, wire};
 use std::{
     cell::RefCell,
     mem::zeroed,
@@ -100,7 +100,7 @@ unsafe fn layout(hwnd: HWND) {
         (105, 408),
         (102, 450),
     ] {
-        ui::move_control(hwnd, 1000 + id, 24, y + 5, 184, 24);
+        ui::move_control(hwnd, 1000 + id, 24, y + 3, 182, 26);
         ui::move_control(
             hwnd,
             id,
@@ -127,6 +127,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             layout(hwnd);
             return 0;
         }
+        WM_GETMINMAXINFO => {
+            let info = &mut *(lp as *mut MINMAXINFO);
+            info.ptMinTrackSize.x = ui::scale(hwnd, 680);
+            info.ptMinTrackSize.y = ui::scale(hwnd, 624);
+            return 0;
+        }
         WM_DPICHANGED => {
             ui::dpi_changed(hwnd, lp);
             ui::client_size(hwnd, 680, 624);
@@ -134,7 +140,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             return 0;
         }
         WM_PAINT => {
-            ui::paint_footer(hwnd, ui::scale(hwnd, 560));
+            let general = SendMessageW(GetDlgItem(hwnd, TAB), TCM_GETCURSEL, 0, 0) == 0;
+            ui::paint_settings(
+                hwnd,
+                if general {
+                    &[901, 902, 903]
+                } else {
+                    &[904, 905]
+                },
+            );
             return 0;
         }
         WM_NCDESTROY => {
@@ -295,6 +309,7 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             add("STATIC", label, 0, 1000 + id);
             let style = WS_TABSTOP
                 | WS_BORDER
+                | ES_LEFT as u32
                 | ES_AUTOHSCROLL as u32
                 | if key == "api_key" {
                     ES_PASSWORD as u32
@@ -303,16 +318,31 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
                 };
             let edit = add("EDIT", config.string(key), style, id);
             SendMessageW(edit, EM_SETLIMITTEXT, 4096, 0);
+            // Physical margins keep text and caret off the border at every DPI.
+            let inset = ui::scale(hwnd, 10) as u16 as usize;
+            SendMessageW(
+                edit,
+                EM_SETMARGINS,
+                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+                ((inset << 16) | inset) as isize,
+            );
+            let hint = match key {
+                "api_key" => "Enter your Mistral API key",
+                "hotkey_custom" => "Optional · for example, Win+Y",
+                "language" => "Automatic detection (not sent)",
+                "model" => wire::DEFAULT_MODEL,
+                "offline_model" => wire::DEFAULT_BATCH_MODEL,
+                "base_url" => wire::DEFAULT_URL,
+                _ => "",
+            };
+            SendMessageW(
+                edit,
+                EM_SETCUEBANNER,
+                usize::from(key == "api_key"),
+                w(hint).as_ptr() as isize,
+            );
             if key == "language" {
                 EnableWindow(edit, 0);
-            }
-            if key == "hotkey_custom" {
-                SendMessageW(
-                    edit,
-                    EM_SETCUEBANNER,
-                    0,
-                    w("For example, Win+Y").as_ptr() as isize,
-                );
             }
         };
         add_edit(0);
@@ -351,7 +381,7 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             add_edit(i);
         }
         add("STATIC", "Realtime inserts text as you speak. Batch sends the recording when you stop.\r\nBoth modes require an internet connection and a Mistral API key.", 0, 910);
-        add("STATIC", "Defaults work for most accounts. Language is kept for compatibility\r\nand is not sent to the transcription service.", 0, 911);
+        add("STATIC", "Blank model and URL fields use the defaults shown as hints.\r\nBatch uses the Mistral API URL, not the realtime URL above.", 0, 911);
         add(
             "BUTTON",
             "&Save",

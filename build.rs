@@ -43,7 +43,10 @@ fn main() {
         let plist = std::path::Path::new("resources/macos/Info.plist")
             .canonicalize()
             .unwrap();
-        println!("cargo:rustc-link-arg-bin=dictation-hotkey-native=-Wl,-sectcreate,__TEXT,__info_plist,{}", plist.display());
+        println!(
+            "cargo:rustc-link-arg-bin=DictationHotkey=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+            plist.display()
+        );
     }
 
     println!("cargo:rerun-if-changed=resources/app.rc");

@@ -19,7 +19,7 @@ cargo test --locked
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
 
-Run `target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe` (relative to the repository root). Distribution names it `DictationHotkey.exe`.
+After making code or resource changes, always run a locked release build for the applicable target and report the result. On Windows, use `cargo build --release --locked --target x86_64-pc-windows-msvc`. Run `target/x86_64-pc-windows-msvc/release/DictationHotkey.exe` (relative to the repository root). Distribution names it `DictationHotkey.exe`.
 
 See `BUILDING.md` for cross-building and opt-in Windows integration tests. Interactive tests change clipboard/window state or inject input; do not run them unattended. Validation results and remaining manual checks are in `benchmarks/WINDOWS_VALIDATION.md`.
 

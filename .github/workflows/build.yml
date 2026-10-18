@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          $exe = 'target/x86_64-pc-windows-msvc/release/dictation-hotkey-native.exe'
+          $exe = 'target/x86_64-pc-windows-msvc/release/DictationHotkey.exe'
           Copy-Item $exe dist/DictationHotkey.exe
           Compress-Archive -Force dist/DictationHotkey.exe dist/DictationHotkey-win64.zip
           Get-ChildItem dist/DictationHotkey.exe, dist/DictationHotkey-win64.zip |
