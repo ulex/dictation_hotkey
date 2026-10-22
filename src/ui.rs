@@ -222,6 +222,13 @@ pub unsafe fn paint_settings(hwnd: HWND, headers: &[i32]) {
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
     FillRect(dc, &rect, GetSysColorBrush(COLOR_WINDOW));
+    let tabs = RECT {
+        left: scale(hwnd, 24),
+        top: scale(hwnd, 131),
+        right: scale(hwnd, 656),
+        bottom: scale(hwnd, 132),
+    };
+    FillRect(dc, &tabs, GetSysColorBrush(COLOR_3DLIGHT));
     for &id in headers {
         let mut header: RECT = zeroed();
         if GetWindowRect(GetDlgItem(hwnd, id), &mut header) != 0 {

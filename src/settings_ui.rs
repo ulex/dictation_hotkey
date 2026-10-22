@@ -10,18 +10,26 @@ use std::{
     },
 };
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Gdi::{InvalidateRect, COLOR_WINDOW},
-    System::LibraryLoader::GetModuleHandleW,
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{
+        DrawFocusRect, DrawTextW, FillRect, GetDC, GetSysColor, GetSysColorBrush, GetTextMetricsW,
+        InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor, COLOR_3DLIGHT,
+        COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, DT_CENTER, DT_LEFT,
+        DT_SINGLELINE, DT_VCENTER, TEXTMETRICW, TRANSPARENT,
+    },
+    System::{LibraryLoader::GetModuleHandleW, SystemServices::SS_OWNERDRAW},
     UI::{
         Controls::*,
-        Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+        Input::KeyboardAndMouse::{EnableWindow, GetFocus, IsWindowEnabled, SetFocus},
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::*,
     },
 };
 const SAVE: usize = 500;
 const CANCEL: usize = 501;
-const TAB: i32 = 600;
+const TAB_GENERAL: i32 = 600;
+const TAB_TRANSCRIPTION: i32 = 601;
+static ACTIVE_TAB: AtomicUsize = AtomicUsize::new(0);
 const TEXT: &[(&str, &str)] = &[
     ("&API key", "api_key"),
     ("&Custom shortcut", "hotkey_custom"),
@@ -50,6 +58,89 @@ static REGISTER: Once = Once::new();
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 use ui::w;
 
+unsafe fn draw_label(hwnd: HWND, item: &DRAWITEMSTRUCT) {
+    let mut text = [0u16; 128];
+    let length = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+    FillRect(item.hDC, &item.rcItem, GetSysColorBrush(COLOR_WINDOW));
+    let previous = SelectObject(item.hDC, SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as _);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    SetTextColor(
+        item.hDC,
+        GetSysColor(if IsWindowEnabled(item.hwndItem) != 0 {
+            COLOR_WINDOWTEXT
+        } else {
+            COLOR_GRAYTEXT
+        }),
+    );
+    let mut rect = item.rcItem;
+    rect.left += ui::scale(hwnd, 2);
+    DrawTextW(
+        item.hDC,
+        text.as_ptr(),
+        length,
+        &mut rect,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+    );
+    if !previous.is_null() {
+        SelectObject(item.hDC, previous);
+    }
+}
+
+unsafe fn draw_tab(hwnd: HWND, item: &DRAWITEMSTRUCT) {
+    let selected = (item.CtlID as i32 == TAB_GENERAL && ACTIVE_TAB.load(Ordering::Relaxed) == 0)
+        || (item.CtlID as i32 == TAB_TRANSCRIPTION && ACTIVE_TAB.load(Ordering::Relaxed) == 1);
+    let rect = item.rcItem;
+    FillRect(item.hDC, &rect, GetSysColorBrush(COLOR_WINDOW));
+
+    let previous = SelectObject(item.hDC, SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as _);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    SetTextColor(
+        item.hDC,
+        GetSysColor(if selected && !ui::high_contrast() {
+            COLOR_HIGHLIGHT
+        } else {
+            COLOR_WINDOWTEXT
+        }),
+    );
+    let mut text_rect = rect;
+    text_rect.left += ui::scale(hwnd, 4);
+    text_rect.right -= ui::scale(hwnd, 4);
+    text_rect.bottom -= ui::scale(hwnd, 3);
+    let label = w(if item.CtlID as i32 == TAB_GENERAL {
+        "General"
+    } else {
+        "Transcription"
+    });
+    DrawTextW(
+        item.hDC,
+        label.as_ptr(),
+        -1,
+        &mut text_rect,
+        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+    );
+
+    let mut underline = rect;
+    underline.top = rect.bottom - ui::scale(hwnd, 1).max(1);
+    FillRect(item.hDC, &underline, GetSysColorBrush(COLOR_3DLIGHT));
+    if selected {
+        underline.left += ui::scale(hwnd, 12);
+        underline.right -= ui::scale(hwnd, 12);
+        underline.top = rect.bottom - ui::scale(hwnd, 2).max(2);
+        FillRect(item.hDC, &underline, GetSysColorBrush(COLOR_HIGHLIGHT));
+    }
+    if item.itemState & ODS_FOCUS != 0 {
+        let mut focus = rect;
+        focus.left += ui::scale(hwnd, 4);
+        focus.right -= ui::scale(hwnd, 4);
+        focus.top += ui::scale(hwnd, 3);
+        focus.bottom -= ui::scale(hwnd, 4);
+        DrawFocusRect(item.hDC, &focus);
+    }
+    if !previous.is_null() {
+        SelectObject(item.hDC, previous);
+    }
+}
+
 // Labels use 1000 + their control ID; headers/notes use shared typography IDs.
 const GENERAL: &[i32] = &[
     901, 100, 1100, 902, 101, 1101, 200, 201, 903, 110, 1110, 111, 1111, 203,
@@ -57,8 +148,97 @@ const GENERAL: &[i32] = &[
 const SERVICE: &[i32] = &[
     904, 202, 910, 905, 103, 1103, 104, 1104, 105, 1105, 102, 1102, 911,
 ];
+// A multiline edit's formatting rectangle controls the text, cue banner, and caret baseline.
+// ES_AUTOHSCROLL keeps these fields horizontally scrolling instead of wrapping.
+struct CueBanner {
+    text: Vec<u16>,
+    show_focused: bool,
+}
+
+unsafe extern "system" fn edit_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    id: usize,
+    data: usize,
+) -> LRESULT {
+    let result = DefSubclassProc(hwnd, msg, wp, lp);
+    if msg == WM_PAINT {
+        let cue = &*(data as *const CueBanner);
+        if GetWindowTextLengthW(hwnd) == 0 && (cue.show_focused || GetFocus() != hwnd) {
+            let dc = GetDC(hwnd);
+            if !dc.is_null() {
+                let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+                let previous = SelectObject(dc, font as _);
+                SetBkMode(dc, TRANSPARENT as i32);
+                SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+                let mut rect: RECT = zeroed();
+                SendMessageW(hwnd, EM_GETRECT, 0, &mut rect as *mut RECT as isize);
+                DrawTextW(
+                    dc,
+                    cue.text.as_ptr(),
+                    -1,
+                    &mut rect,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
+                if !previous.is_null() {
+                    SelectObject(dc, previous);
+                }
+                ReleaseDC(hwnd, dc);
+            }
+        }
+    }
+    if matches!(
+        msg,
+        WM_SETFOCUS | WM_KILLFOCUS | WM_CHAR | WM_KEYUP | WM_PASTE | WM_CUT | WM_CLEAR | WM_SETTEXT
+    ) {
+        InvalidateRect(hwnd, null(), 1);
+    }
+    if msg == WM_NCDESTROY {
+        RemoveWindowSubclass(hwnd, Some(edit_subclass), id);
+        drop(Box::from_raw(data as *mut CueBanner));
+    }
+    result
+}
+
+unsafe fn center_edit(hwnd: HWND, id: i32) {
+    let edit = GetDlgItem(hwnd, id);
+    if edit.is_null() {
+        return;
+    }
+    let mut rect: RECT = zeroed();
+    if GetClientRect(edit, &mut rect) == 0 {
+        return;
+    }
+    let dc = GetDC(edit);
+    if dc.is_null() {
+        return;
+    }
+    let font = SendMessageW(edit, WM_GETFONT, 0, 0);
+    let previous = SelectObject(dc, font as _);
+    let mut metrics: TEXTMETRICW = zeroed();
+    let text_height = if GetTextMetricsW(dc, &mut metrics) != 0 {
+        metrics.tmHeight
+    } else {
+        ui::scale(hwnd, 15)
+    };
+    if !previous.is_null() {
+        SelectObject(dc, previous);
+    }
+    ReleaseDC(edit, dc);
+
+    let height = rect.bottom - rect.top;
+    let vertical_inset = ((height - text_height).max(0)) / 2;
+    rect.left = ui::scale(hwnd, 10);
+    rect.right -= ui::scale(hwnd, 10);
+    rect.top = vertical_inset;
+    rect.bottom -= vertical_inset;
+    SendMessageW(edit, EM_SETRECTNP, 0, &rect as *const RECT as isize);
+}
+
 unsafe fn page(hwnd: HWND) {
-    let general = SendMessageW(GetDlgItem(hwnd, TAB), TCM_GETCURSEL, 0, 0) == 0;
+    let general = ACTIVE_TAB.load(Ordering::Relaxed) == 0;
     for (ids, visible) in [(GENERAL, general), (SERVICE, !general)] {
         for &id in ids {
             ShowWindow(
@@ -73,7 +253,8 @@ unsafe fn layout(hwnd: HWND) {
     for (id, x, y, width, height) in [
         (900, 24, 18, 632, 34),
         (912, 24, 57, 632, 24),
-        (TAB, 24, 96, 632, 36),
+        (TAB_GENERAL, 24, 96, 140, 36),
+        (TAB_TRANSCRIPTION, 164, 96, 140, 36),
         (901, 24, 152, 632, 26),
         (902, 24, 240, 632, 26),
         (903, 24, 370, 632, 26),
@@ -100,7 +281,7 @@ unsafe fn layout(hwnd: HWND) {
         (105, 408),
         (102, 450),
     ] {
-        ui::move_control(hwnd, 1000 + id, 24, y + 3, 182, 26);
+        ui::move_control(hwnd, 1000 + id, 24, y, 182, 30);
         ui::move_control(
             hwnd,
             id,
@@ -109,6 +290,9 @@ unsafe fn layout(hwnd: HWND) {
             440,
             if id == 110 || id == 111 { 180 } else { 30 },
         );
+        if id != 110 && id != 111 {
+            center_edit(hwnd, id);
+        }
     }
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -116,12 +300,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         return result;
     }
     match msg {
-        WM_NOTIFY if !((lp as *const NMHDR).is_null()) => {
-            let notification = &*(lp as *const NMHDR);
-            if notification.idFrom == TAB as usize && notification.code == TCN_SELCHANGE {
-                page(hwnd);
+        WM_DRAWITEM if !((lp as *const DRAWITEMSTRUCT).is_null()) => {
+            let item = &*(lp as *const DRAWITEMSTRUCT);
+            let id = item.CtlID as i32;
+            if (1100..=1111).contains(&id) {
+                draw_label(hwnd, item);
+                return 1;
             }
-            return 0;
+            if id == TAB_GENERAL || id == TAB_TRANSCRIPTION {
+                draw_tab(hwnd, item);
+                return 1;
+            }
         }
         WM_SIZE => {
             layout(hwnd);
@@ -140,7 +329,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             return 0;
         }
         WM_PAINT => {
-            let general = SendMessageW(GetDlgItem(hwnd, TAB), TCM_GETCURSEL, 0, 0) == 0;
+            let general = ACTIVE_TAB.load(Ordering::Relaxed) == 0;
             ui::paint_settings(
                 hwnd,
                 if general {
@@ -155,6 +344,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             ui::detach(hwnd);
         }
         _ => {}
+    }
+    if msg == WM_COMMAND
+        && (wp & 0xffff == TAB_GENERAL as usize || wp & 0xffff == TAB_TRANSCRIPTION as usize)
+    {
+        ACTIVE_TAB.store(
+            usize::from(wp & 0xffff == TAB_TRANSCRIPTION as usize),
+            Ordering::Relaxed,
+        );
+        page(hwnd);
+        InvalidateRect(GetDlgItem(hwnd, TAB_GENERAL), null(), 1);
+        InvalidateRect(GetDlgItem(hwnd, TAB_TRANSCRIPTION), null(), 1);
+        return 0;
     }
     if msg == WM_COMMAND && wp & 0xffff == SAVE {
         let updated = STATE.with(|cell| cell.borrow().as_ref().map(|(cfg, _)| cfg.clone()));
@@ -284,16 +485,19 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             0,
             912,
         );
-        let tab = add("SysTabControl32", "", WS_TABSTOP, TAB as usize);
-        for (index, label) in ["General", "Transcription"].into_iter().enumerate() {
-            let mut text = w(label);
-            let item = TCITEMW {
-                mask: TCIF_TEXT,
-                pszText: text.as_mut_ptr(),
-                ..zeroed()
-            };
-            SendMessageW(tab, TCM_INSERTITEMW, index, &item as *const _ as isize);
-        }
+        ACTIVE_TAB.store(0, Ordering::Relaxed);
+        add(
+            "BUTTON",
+            "General",
+            WS_TABSTOP | BS_OWNERDRAW as u32,
+            TAB_GENERAL as usize,
+        );
+        add(
+            "BUTTON",
+            "Transcription",
+            WS_TABSTOP | BS_OWNERDRAW as u32,
+            TAB_TRANSCRIPTION as usize,
+        );
         for (id, text) in [
             (901, "Mistral account"),
             (902, "Keyboard shortcuts"),
@@ -306,9 +510,10 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
         let add_edit = |i: usize| {
             let (label, key) = TEXT[i];
             let id = 100 + i;
-            add("STATIC", label, 0, 1000 + id);
+            add("STATIC", label, SS_OWNERDRAW, 1000 + id);
             let style = WS_TABSTOP
                 | WS_BORDER
+                | ES_MULTILINE as u32
                 | ES_LEFT as u32
                 | ES_AUTOHSCROLL as u32
                 | if key == "api_key" {
@@ -318,14 +523,6 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
                 };
             let edit = add("EDIT", config.string(key), style, id);
             SendMessageW(edit, EM_SETLIMITTEXT, 4096, 0);
-            // Physical margins keep text and caret off the border at every DPI.
-            let inset = ui::scale(hwnd, 10) as u16 as usize;
-            SendMessageW(
-                edit,
-                EM_SETMARGINS,
-                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
-                ((inset << 16) | inset) as isize,
-            );
             let hint = match key {
                 "api_key" => "Enter your Mistral API key",
                 "hotkey_custom" => "Optional · for example, Win+Y",
@@ -335,12 +532,14 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
                 "base_url" => wire::DEFAULT_URL,
                 _ => "",
             };
-            SendMessageW(
-                edit,
-                EM_SETCUEBANNER,
-                usize::from(key == "api_key"),
-                w(hint).as_ptr() as isize,
-            );
+            let cue = Box::new(CueBanner {
+                text: w(hint),
+                show_focused: key == "api_key",
+            });
+            let cue = Box::into_raw(cue);
+            if SetWindowSubclass(edit, Some(edit_subclass), id, cue as usize) == 0 {
+                drop(Box::from_raw(cue));
+            }
             if key == "language" {
                 EnableWindow(edit, 0);
             }
@@ -363,7 +562,7 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             (110, "Typing method", "typing_mode", MODES),
             (111, "Paste shortcut", "paste_shortcut", SHORTCUTS),
         ] {
-            add("STATIC", label, 0, 1000 + id);
+            add("STATIC", label, SS_OWNERDRAW, 1000 + id);
             let combo = add("COMBOBOX", "", WS_TABSTOP | CBS_DROPDOWNLIST as u32, id);
             for (label, _) in options {
                 SendMessageW(combo, CB_ADDSTRING, 0, w(label).as_ptr() as isize);

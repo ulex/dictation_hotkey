@@ -23,6 +23,34 @@ use windows::Win32::{
         Threading::{CreateEventW, WaitForSingleObject},
     },
 };
+// Device positions are in capture frames. A discontinuity flag can occur with or
+// without a measurable gap; only forward jumps can be repaired with silence.
+fn missing_frames(previous_end: Option<u64>, position: u64) -> u64 {
+    previous_end.map_or(0, |end| position.saturating_sub(end))
+}
+
+fn append_pcm(
+    pcm: &[u8],
+    total: &mut u64,
+    pending: &mut Vec<u8>,
+    stop: &AtomicBool,
+    output: &mut impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    for sample in pcm.as_chunks::<2>().0 {
+        if *total == MAX_AUDIO_BYTES {
+            stop.store(true, Ordering::Release);
+            break;
+        }
+        *total += 2;
+        pending.extend_from_slice(sample);
+        if pending.len() == 3200 {
+            output(pending)?;
+            pending.clear();
+        }
+    }
+    Ok(())
+}
+
 fn error(e: windows::core::Error) -> io::Error {
     io::Error::other(format!(
         "microphone: {e} (check device and Windows microphone permissions)"
@@ -82,8 +110,9 @@ unsafe fn capture_inner(
         let result = (|| {
             let mut pending = Vec::with_capacity(3200);
             let mut total = 0u64;
-            let mut first = true;
             let mut last_end = None::<u64>;
+            let mut discontinuities = 0u64;
+            let mut concealed_frames = 0u64;
             let mut packets = 0u64;
             let mut timeouts = 0u64;
             let mut last_packet_at = started;
@@ -124,12 +153,22 @@ unsafe fn capture_inner(
                         if frames > SAMPLE_RATE {
                             return Err(io::Error::other("oversized microphone packet"));
                         }
-                        if !first && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
+                        // Flags alone do not tell us how many frames were lost. A forward
+                        // device-position jump does, even when the driver omits the flag.
+                        // The first packet has no reliable predecessor.
+                        let gap = missing_frames(last_end, position);
+                        if gap > u64::from(SAMPLE_RATE) {
                             return Err(io::Error::other(format!(
-                                "WASAPI reported lost microphone audio during capture (elapsed: {} ms; stop requested: {}; packet: {frames} frames, flags: 0x{flags:x}; device position: {position}, previous end: {last_end:?}; captured: {} frames; packets: {packets}; buffer: {buffer_frames} frames; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms). Recording incomplete",
-                                started.elapsed().as_millis(), stop.load(Ordering::Acquire), total / 2,
+                                "microphone lost more than one second of audio (gap: {gap} frames; flags: 0x{flags:x}); recording incomplete"
                             )));
                         }
+                        if last_end.is_some()
+                            && (gap != 0
+                                || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0)
+                        {
+                            discontinuities += 1;
+                        }
+                        concealed_frames += gap;
                         if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
                             Ok(vec![0u8; frames as usize * 2])
                         } else if frames == 0 {
@@ -141,20 +180,25 @@ unsafe fn capture_inner(
                         }
                     })();
                     reader.ReleaseBuffer(frames).map_err(error)?;
-                    first = false;
+                    let copied = copied?;
+                    let gap = missing_frames(last_end, position);
                     last_end = position.checked_add(u64::from(frames));
-                    for sample in copied?.as_chunks::<2>().0 {
-                        if total == MAX_AUDIO_BYTES {
-                            stop.store(true, Ordering::Release);
-                            break;
-                        }
-                        total += 2;
-                        pending.extend_from_slice(sample);
-                        if pending.len() == 3200 {
-                            output(&pending)?;
-                            pending.clear();
-                        }
+                    // Emit silence in bounded chunks, not a gap-sized allocation. Keep both
+                    // realtime output and the fallback WAV on the same capture timeline.
+                    let silence = [0u8; 3200];
+                    let mut remaining = gap;
+                    while remaining != 0 {
+                        let count = remaining.min(u64::from(SAMPLE_RATE / 10));
+                        append_pcm(
+                            &silence[..count as usize * 2],
+                            &mut total,
+                            &mut pending,
+                            stop,
+                            output,
+                        )?;
+                        remaining -= count;
                     }
+                    append_pcm(&copied, &mut total, &mut pending, stop, output)?;
                 }
                 if total == MAX_AUDIO_BYTES {
                     stop.store(true, Ordering::Release);
@@ -169,7 +213,7 @@ unsafe fn capture_inner(
                 output(&pending)?;
             }
             logs_ui::log(&format!(
-                "WASAPI capture stopped (elapsed: {} ms; captured: {} frames; packets: {packets}; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms)",
+                "WASAPI capture stopped (elapsed: {} ms; captured: {} frames; packets: {packets}; discontinuities: {discontinuities}; silence inserted: {concealed_frames} frames; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms)",
                 started.elapsed().as_millis(), total / 2,
             ));
             Ok(())
@@ -181,4 +225,43 @@ unsafe fn capture_inner(
     })();
     let _ = CloseHandle(event);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discontinuity_positions_only_conceal_forward_gaps() {
+        assert_eq!(missing_frames(None, 64_320), 0);
+        assert_eq!(missing_frames(Some(64_000), 64_320), 320);
+        assert_eq!(missing_frames(Some(64_000), 64_000), 0);
+        assert_eq!(missing_frames(Some(64_000), 63_840), 0);
+    }
+
+    #[test]
+    fn silence_keeps_pcm_in_order_and_respects_quota() {
+        let stop = AtomicBool::new(false);
+        let mut total = 0;
+        let mut pending = Vec::new();
+        let mut emitted = Vec::new();
+        let mut output = |pcm: &[u8]| {
+            emitted.extend_from_slice(pcm);
+            Ok(())
+        };
+        append_pcm(&[1, 0], &mut total, &mut pending, &stop, &mut output).unwrap();
+        append_pcm(&[0; 320], &mut total, &mut pending, &stop, &mut output).unwrap();
+        append_pcm(&[2, 0], &mut total, &mut pending, &stop, &mut output).unwrap();
+        assert_eq!(total, 324);
+        assert_eq!(&pending[..2], &[1, 0]);
+        assert!(pending[2..322].iter().all(|&byte| byte == 0));
+        assert_eq!(&pending[322..], &[2, 0]);
+
+        total = MAX_AUDIO_BYTES;
+        append_pcm(&[3, 0], &mut total, &mut pending, &stop, &mut output).unwrap();
+        assert!(stop.load(Ordering::Acquire));
+        assert_eq!(total, MAX_AUDIO_BYTES);
+        assert_eq!(pending.len(), 324);
+        assert!(emitted.is_empty());
+    }
 }
