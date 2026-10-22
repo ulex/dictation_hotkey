@@ -458,6 +458,18 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             return None;
         }
         ui::attach(hwnd, false);
+        let icon = LoadImageW(
+            instance,
+            101usize as _,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        );
+        if !icon.is_null() {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
+        }
         WINDOW.store(hwnd as usize, Ordering::Relaxed);
         STATE.with(|cell| *cell.borrow_mut() = Some((config.clone(), false)));
         let add = |kind: &str, text: &str, style: u32, id: usize| {
@@ -513,7 +525,11 @@ pub fn open(parent: HWND, config: &Config) -> Option<Config> {
             add("STATIC", label, SS_OWNERDRAW, 1000 + id);
             let style = WS_TABSTOP
                 | WS_BORDER
-                | ES_MULTILINE as u32
+                | if key != "api_key" {
+                    ES_MULTILINE as u32
+                } else {
+                    0
+                }
                 | ES_LEFT as u32
                 | ES_AUTOHSCROLL as u32
                 | if key == "api_key" {

@@ -239,6 +239,7 @@ impl App {
         self.pending_copy = None;
         self.busy_since = None;
         self.core.fail(self.core.ticket, "output failed");
+        let copied = !self.core.text.is_empty() && output::copy(self.hwnd, &self.core.text).is_ok();
         if !self.core.text.is_empty() {
             self.core.last_text.clone_from(&self.core.text);
         }
@@ -246,7 +247,17 @@ impl App {
             control.cancel();
         }
         ACTIVE.store(false, Ordering::Release);
-        self.show(reason, true);
+        self.show(
+            &format!(
+                "{reason}; transcript {}",
+                if copied {
+                    "copied to clipboard"
+                } else {
+                    "available in Copy Last Text"
+                }
+            ),
+            true,
+        );
         self.timer();
     }
     fn begin(&mut self, clipboard_only: bool) {
