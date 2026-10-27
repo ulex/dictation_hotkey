@@ -25,10 +25,12 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM,
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_INVALID_HOOK_HANDLE, HWND, LPARAM,
+        LRESULT, POINT, WPARAM,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
+        Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
         HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
         Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT},
         Shell::*,
@@ -39,6 +41,10 @@ const CLASS: &str = "DictationHotkeyNativeController";
 const TRAY: u32 = WM_APP + 1;
 const TOGGLE: u32 = WM_APP + 2;
 const RESULT: u32 = WM_APP + 3;
+// WM_APP + 4 is overlay::STOP_MESSAGE.
+const RDP_FOREGROUND: u32 = WM_APP + 5;
+const RDP_HOOK_TIMER: usize = 3;
+const RDP_HOOK_INTERVAL_MS: u32 = 1000;
 const SETTINGS: usize = 1;
 const LOGS: usize = 2;
 const COPY: usize = 3;
@@ -75,6 +81,22 @@ fn post(hwnd: HWND, event: Event) -> bool {
         return false;
     }
     true
+}
+unsafe extern "system" fn foreground_changed(
+    _: HWINEVENTHOOK,
+    _: u32,
+    _: HWND,
+    _: i32,
+    _: i32,
+    _: u32,
+    _: u32,
+) {
+    // Resolve the *current* foreground process on the controller, not the
+    // possibly stale window from this asynchronous notification.
+    let hwnd = CONTROLLER.load(Ordering::Relaxed) as HWND;
+    if !hwnd.is_null() {
+        PostMessageW(hwnd, RDP_FOREGROUND, 0, 0);
+    }
 }
 unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code >= 0
@@ -186,6 +208,9 @@ struct App {
     worker: Option<JoinHandle<()>>,
     control: Option<Control>,
     hook: HHOOK,
+    foreground_hook: HWINEVENTHOOK,
+    rdp_timer: bool,
+    hook_refresh_failed: bool,
     custom_id: i32,
     status: String,
     pending: String,
@@ -198,6 +223,60 @@ struct App {
     quitting: bool,
 }
 impl App {
+    fn refresh_keyboard_hook(&mut self) {
+        unsafe {
+            // Install first: on failure the previous hook remains in place.
+            // Both hooks run on this thread and share the existing MATCHER;
+            // never reset pressed/suppressed keys during a refresh.
+            let replacement =
+                SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), GetModuleHandleW(null()), 0);
+            let error = if replacement.is_null() {
+                Some(GetLastError())
+            } else if !self.hook.is_null()
+                && UnhookWindowsHookEx(self.hook) == 0
+                && GetLastError() != ERROR_INVALID_HOOK_HANDLE
+            {
+                let error = GetLastError();
+                UnhookWindowsHookEx(replacement);
+                Some(error)
+            } else {
+                // An invalid old handle can mean Windows removed a timed-out
+                // hook. Keep the successfully installed replacement in that case.
+                self.hook = replacement;
+                None
+            };
+            if let Some(error) = error {
+                if !self.hook_refresh_failed {
+                    logs_ui::log(&format!(
+                        "RDP keyboard hook refresh failed (Windows error {error})"
+                    ));
+                }
+                self.hook_refresh_failed = true;
+            } else {
+                if self.hook_refresh_failed {
+                    logs_ui::log("RDP keyboard hook refresh recovered");
+                }
+                self.hook_refresh_failed = false;
+            }
+        }
+    }
+    fn update_rdp_hook(&mut self) {
+        unsafe {
+            if !self.quitting && crate::rdp::foreground_is_rdp() {
+                self.refresh_keyboard_hook();
+                if !self.rdp_timer {
+                    self.rdp_timer =
+                        SetTimer(self.hwnd, RDP_HOOK_TIMER, RDP_HOOK_INTERVAL_MS, None) != 0;
+                    if !self.rdp_timer {
+                        logs_ui::log("Unable to start RDP keyboard hook refresh timer");
+                    }
+                }
+            } else if self.rdp_timer {
+                KillTimer(self.hwnd, RDP_HOOK_TIMER);
+                self.rdp_timer = false;
+            }
+        }
+    }
     fn capturing(&self) -> bool {
         matches!(
             self.core.phase,
@@ -732,6 +811,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             menu(hwnd);
             0
         }
+        RDP_FOREGROUND => {
+            with_app(App::update_rdp_hook);
+            0
+        }
+        WM_TIMER if wp == RDP_HOOK_TIMER => {
+            with_app(App::update_rdp_hook);
+            0
+        }
         WM_TIMER if wp == 1 => {
             with_app(App::tick);
             0
@@ -822,6 +909,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_DESTROY => {
             let _ = clipboard::restore(hwnd);
             with_app(|app| {
+                KillTimer(hwnd, RDP_HOOK_TIMER);
+                app.rdp_timer = false;
+                if !app.foreground_hook.is_null() {
+                    UnhookWinEvent(app.foreground_hook);
+                    app.foreground_hook = null_mut();
+                }
                 if !app.hook.is_null() {
                     UnhookWindowsHookEx(app.hook);
                     app.hook = null_mut();
@@ -936,6 +1029,9 @@ pub fn run() -> Result<(), String> {
                 worker: None,
                 control: None,
                 hook: null_mut(),
+                foreground_hook: null_mut(),
+                rdp_timer: false,
+                hook_refresh_failed: false,
                 custom_id: 1,
                 status: "Ready".into(),
                 pending: String::new(),
@@ -971,6 +1067,23 @@ pub fn run() -> Result<(), String> {
             if let Some(warning) = warning {
                 app.show(warning, true);
             }
+        });
+        let foreground_hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            null_mut(),
+            Some(foreground_changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        with_app(|app| {
+            app.foreground_hook = foreground_hook;
+            if foreground_hook.is_null() {
+                logs_ui::log("RDP foreground notifications unavailable");
+            }
+            // Also cover an RDP session that was foreground before app startup.
+            app.update_rdp_hook();
         });
         logs_ui::log("Native app ready; microphone and network are inactive");
         if missing_key {

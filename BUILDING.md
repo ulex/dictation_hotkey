@@ -54,6 +54,19 @@ Package it as `DictationHotkey.exe` for distribution. Python and Qt are not requ
 
 `tools/verify_sdk_protocol.py` is an optional development-only check against the pinned Mistral Python SDK. It verifies the sanitized fixtures used by the Rust protocol tests without making network requests; it is not part of the app or CI build.
 
+## Windows RDP shortcut compatibility
+
+When Microsoft's Remote Desktop client (`mstsc.exe` or `msrdc.exe`) becomes the foreground application, Dictation Hotkey refreshes its Win+H/Copilot low-level keyboard hook immediately and once per second while that client stays foreground. The refresh timer stops when another application becomes foreground; the normal keyboard hook remains installed. This applies to both full-screen and windowed sessions and does not change RDP settings or the custom `RegisterHotKey` shortcut path.
+
+Refreshing moves the hook ahead of hooks already installed by RDP. It preserves pressed-key and suppressed-release tracking, and installs the replacement before removing the old hook so installation failure leaves the old hook intact. This is best-effort priority, not an exclusive Windows reservation: if RDP installs another hook, it may win until the next refresh. Other RDP clients are not currently detected.
+
+Manual validation on an unlocked Windows desktop (do not run unattended):
+
+- Start Dictation Hotkey **before** RDP, enter full-screen RDP, and verify Win+H/Copilot starts and stops local dictation without triggering the remote shortcut.
+- Switch between local apps and RDP, switch full-screen/windowed modes, and reconnect. Verify interception recovers within about one second.
+- Hold a shortcut across a refresh tick, exercise key repeat and both Windows-key release orders, and verify no duplicate toggles, stuck modifiers, or unwanted Start activation. Bare Windows-key behavior is unchanged.
+- Verify custom shortcuts, Escape-to-stop, overlay Stop, clipboard restoration, and quitting still work. Test remote text insertion separately from shortcut interception.
+
 ## macOS build and packaging
 
 Install Xcode Command Line Tools and Rust 1.99.0. Swift is supplied by the Apple tools; no additional Rust dependencies are needed for macOS. Build.rs compiles the native Swift framework adapter only for macOS targets.

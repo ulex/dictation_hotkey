@@ -2,6 +2,9 @@
 #[cfg(windows)]
 #[path = "platform/windows/app.rs"]
 mod app;
+#[cfg(any(windows, test))]
+#[path = "platform/windows/rdp.rs"]
+mod rdp;
 
 #[cfg(windows)]
 fn main() {
