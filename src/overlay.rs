@@ -12,7 +12,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 pub const STOP_MESSAGE: u32 = WM_APP + 4;
-thread_local! { static RECORDING: Cell<bool> = const { Cell::new(false) }; static PULSE: Cell<bool> = const { Cell::new(false) }; }
+thread_local! { static RECORDING: Cell<bool> = const { Cell::new(false) }; }
 use ui::w;
 unsafe fn round_region(hwnd: HWND) {
     let mut rect: RECT = zeroed();
@@ -34,27 +34,28 @@ unsafe fn position(hwnd: HWND) {
     let work = info.rcWork;
     let width = ui::scale(hwnd, 560).min(work.right - work.left);
     let height = ui::scale(hwnd, 64);
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        work.left + (work.right - work.left - width) / 2,
-        work.bottom - height - ui::scale(hwnd, 24),
-        width,
-        height,
-        SWP_NOACTIVATE,
-    );
-    round_region(hwnd);
+    let x = work.left + (work.right - work.left - width) / 2;
+    let y = work.bottom - height - ui::scale(hwnd, 24);
+    let mut current: RECT = zeroed();
+    let have_current = GetWindowRect(hwnd, &mut current) != 0;
+    let same_position = have_current && current.left == x && current.top == y;
+    let same_size = have_current
+        && current.right - current.left == width
+        && current.bottom - current.top == height;
+    let mut flags = SWP_NOACTIVATE;
+    if same_position {
+        flags |= SWP_NOMOVE;
+    }
+    if same_size {
+        flags |= SWP_NOSIZE;
+    }
+    SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, flags);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
         WM_LBUTTONUP => {
             PostMessageW(GetWindow(hwnd, GW_OWNER), STOP_MESSAGE, 0, 0);
-            0
-        }
-        WM_TIMER if wp == 1 => {
-            PULSE.with(|p| p.set(!p.get()));
-            InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_TIMER if wp == 2 => {
@@ -65,6 +66,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_DPICHANGED => {
             ui::dpi_changed(hwnd, lp);
             position(hwnd);
+            round_region(hwnd);
             0
         }
         WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
@@ -85,9 +87,24 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             let mut paint: PAINTSTRUCT = zeroed();
-            let dc = BeginPaint(hwnd, &mut paint);
+            let paint_dc = BeginPaint(hwnd, &mut paint);
             let mut rect: RECT = zeroed();
             GetClientRect(hwnd, &mut rect);
+            let client_width = rect.right - rect.left;
+            let client_height = rect.bottom - rect.top;
+            let memory_dc = CreateCompatibleDC(paint_dc);
+            let bitmap = CreateCompatibleBitmap(
+                paint_dc,
+                (rect.right - rect.left).max(1),
+                (rect.bottom - rect.top).max(1),
+            );
+            let buffered = !memory_dc.is_null() && !bitmap.is_null();
+            let old_bitmap = if buffered {
+                SelectObject(memory_dc, bitmap)
+            } else {
+                null_mut()
+            };
+            let dc = if buffered { memory_dc } else { paint_dc };
             let contrast = ui::high_contrast();
             let brush = CreateSolidBrush(if contrast {
                 GetSysColor(COLOR_WINDOW)
@@ -114,7 +131,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let recording = RECORDING.with(Cell::get);
             if recording {
                 // Reuse the smoothed ball asset instead of a jagged GDI ellipse.
-                let size = ui::scale(hwnd, if PULSE.with(Cell::get) { 18 } else { 16 });
+                let size = ui::scale(hwnd, 16);
                 let icon = LoadImageW(
                     GetModuleHandleW(null()),
                     102usize as _,
@@ -192,11 +209,30 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     | if recording { DT_LEFT } else { DT_CENTER },
             );
             SelectObject(dc, previous);
+            if buffered {
+                BitBlt(
+                    paint_dc,
+                    0,
+                    0,
+                    client_width,
+                    client_height,
+                    memory_dc,
+                    0,
+                    0,
+                    SRCCOPY,
+                );
+                SelectObject(memory_dc, old_bitmap);
+            }
+            if !bitmap.is_null() {
+                DeleteObject(bitmap);
+            }
+            if !memory_dc.is_null() {
+                DeleteDC(memory_dc);
+            }
             EndPaint(hwnd, &paint);
             0
         }
         WM_DESTROY => {
-            KillTimer(hwnd, 1);
             KillTimer(hwnd, 2);
             0
         }
@@ -247,21 +283,19 @@ impl Overlay {
                 LWA_ALPHA,
             );
             position(hwnd);
+            round_region(hwnd);
             Ok(Self { hwnd })
         }
     }
     pub fn show(&self, message: &str, recording: bool, persistent: bool) {
         unsafe {
-            KillTimer(self.hwnd, 1);
             KillTimer(self.hwnd, 2);
             RECORDING.with(|r| r.set(recording));
             SetWindowTextW(self.hwnd, w(message).as_ptr());
             position(self.hwnd);
             InvalidateRect(self.hwnd, null(), 0);
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            if recording {
-                SetTimer(self.hwnd, 1, 450, None);
-            } else if !persistent {
+            if !recording && !persistent {
                 SetTimer(self.hwnd, 2, 3000, None);
             }
         }
@@ -269,7 +303,6 @@ impl Overlay {
     pub fn hide(&self) {
         unsafe {
             ShowWindow(self.hwnd, SW_HIDE);
-            KillTimer(self.hwnd, 1);
             KillTimer(self.hwnd, 2);
         }
     }
