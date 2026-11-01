@@ -1,5 +1,6 @@
 //! Streamed batch upload over system WinHTTP/Schannel, off the UI thread.
 use crate::{
+    diagnostics::{BatchPhase, BatchTimingLog},
     network_handle::Handle,
     spool::random_name,
     wire::{batch_text, Multipart},
@@ -13,7 +14,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::Networking::WinHttp::*;
 fn wide(s: &str) -> Vec<u16> {
@@ -49,7 +50,10 @@ pub fn batch(
     model: &str,
     api_key: &str,
     cancelled: Arc<AtomicBool>,
+    measure_timings: bool,
 ) -> io::Result<String> {
+    let mut timing = BatchTimingLog::new(measure_timings);
+    let setup_started = Instant::now();
     if api_key.is_empty() || api_key.chars().any(|c| c.is_control()) {
         return Err(io::Error::other("invalid API key"));
     }
@@ -60,6 +64,8 @@ pub fn batch(
     let wav_bytes = file.metadata()?.len();
     let boundary = format!("dh-{}", random_name()?);
     let multipart = Multipart::new(&boundary, model, wav_bytes)?;
+    timing.set_audio_bytes(wav_bytes);
+    let network_started = Instant::now();
     unsafe {
         let session = Handle::new(
             WinHttpOpen(
@@ -115,6 +121,8 @@ pub fn batch(
         let headers = wide(&format!(
             "Content-Type: multipart/form-data; boundary={boundary}\r\nAccept: application/json"
         ));
+        timing.record(BatchPhase::Setup, setup_started.elapsed());
+        let connection_started = Instant::now();
         if WinHttpSendRequest(
             request.raw()?,
             headers.as_ptr(),
@@ -127,6 +135,8 @@ pub fn batch(
         {
             return Err(err("HTTP request"));
         }
+        timing.record(BatchPhase::Connection, connection_started.elapsed());
+        let upload_started = Instant::now();
         write_all(&request, multipart.prefix.as_bytes())?;
         let mut block = [0u8; 32768];
         loop {
@@ -140,6 +150,8 @@ pub fn batch(
             write_all(&request, &block[..count])?;
         }
         write_all(&request, multipart.suffix.as_bytes())?;
+        timing.record(BatchPhase::Upload, upload_started.elapsed());
+        let response_started = Instant::now();
         if WinHttpReceiveResponse(request.raw()?, null_mut()) == 0 {
             return Err(err("HTTP reply"));
         }
@@ -156,6 +168,8 @@ pub fn batch(
         {
             return Err(err("HTTP status"));
         }
+        timing.record(BatchPhase::ServerWait, response_started.elapsed());
+        let response_body_started = Instant::now();
         let mut body = Vec::new();
         loop {
             let mut count = 0;
@@ -189,11 +203,18 @@ pub fn batch(
             }
             body.extend_from_slice(&block[..count as usize]);
         }
+        timing.record(BatchPhase::ResponseBody, response_body_started.elapsed());
+        timing.record(BatchPhase::NetworkTotal, network_started.elapsed());
         if status != 200 {
             return Err(io::Error::other(crate::wire::batch_error(
                 status, model, wav_bytes, &body,
             )));
         }
-        batch_text(&body)
+        let parse_started = Instant::now();
+        let result = batch_text(&body);
+        timing.record(BatchPhase::ResponseParse, parse_started.elapsed());
+        let text = result?;
+        timing.mark_succeeded();
+        Ok(text)
     }
 }

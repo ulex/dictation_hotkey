@@ -60,6 +60,7 @@ fn winhttp_realtime_and_batch_authentication_rejection() {
         wire::DEFAULT_BATCH_MODEL,
         invalid_key,
         Arc::new(AtomicBool::new(false)),
+        false,
     )
     .unwrap_err();
     eprintln!("Batch rejection: {error}");
@@ -85,6 +86,7 @@ fn cancelled_transports_return_promptly() {
         wire::DEFAULT_BATCH_MODEL,
         "test-key",
         cancelled,
+        false,
     )
     .is_err());
     assert!(started.elapsed() < Duration::from_secs(5));

@@ -17,6 +17,11 @@ private final class Network: NSObject, URLSessionDataDelegate, URLSessionTaskDel
     var completed = false
     var failed = false
     var closed = false
+    var requestStartedAt: UInt64?
+    var uploadStartedAt: UInt64?
+    var uploadCompletedAt: UInt64?
+    var responseStartedAt: UInt64?
+    var requestCompletedAt: UInt64?
     override init() {
         super.init()
         let config = URLSessionConfiguration.ephemeral
@@ -36,8 +41,22 @@ private final class Network: NSObject, URLSessionDataDelegate, URLSessionTaskDel
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                    totalBytesExpectedToSend: Int64) {
+        condition.lock()
+        let now = DispatchTime.now().uptimeNanoseconds
+        if uploadStartedAt == nil { uploadStartedAt = now }
+        if totalBytesExpectedToSend > 0 && totalBytesSent >= totalBytesExpectedToSend && uploadCompletedAt == nil {
+            uploadCompletedAt = now
+        }
+        condition.unlock()
+    }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        condition.lock()
+        if responseStartedAt == nil { responseStartedAt = DispatchTime.now().uptimeNanoseconds }
+        condition.unlock()
         completionHandler((response as? HTTPURLResponse)?.statusCode == 200 ? .allow : .cancel)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -47,7 +66,8 @@ private final class Network: NSObject, URLSessionDataDelegate, URLSessionTaskDel
         condition.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        condition.lock(); failed = failed || error != nil
+        condition.lock(); requestCompletedAt = DispatchTime.now().uptimeNanoseconds
+        failed = failed || error != nil
         if !(task is URLSessionWebSocketTask) {
             failed = failed || (task.response as? HTTPURLResponse)?.statusCode != 200
         }
@@ -115,6 +135,7 @@ public func httpNew(_ path: UnsafePointer<CChar>, _ boundary: UnsafePointer<CCha
     request.setValue("multipart/form-data; boundary=\(String(cString: boundary))", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     net.task = net.session.uploadTask(with: request, fromFile: URL(fileURLWithPath: String(cString: path)))
+    net.condition.lock(); net.requestStartedAt = DispatchTime.now().uptimeNanoseconds; net.condition.unlock()
     net.task.resume()
     return Unmanaged.passRetained(net).toOpaque()
 }
@@ -127,6 +148,23 @@ public func httpReceive(_ pointer: UnsafeMutableRawPointer, _ bytes: UnsafeMutab
     guard net.completed && !net.closed && !net.failed && net.response.count <= capacity else { return -1 }
     net.response.copyBytes(to: bytes, count: net.response.count)
     return net.response.count
+}
+@_cdecl("dh_http_timing")
+public func httpTiming(_ pointer: UnsafeMutableRawPointer, _ phase: Int32) -> Int64 {
+    let net = network(pointer)
+    net.condition.lock(); defer { net.condition.unlock() }
+    let start: UInt64?
+    let end: UInt64?
+    switch phase {
+    case 0: start = net.uploadStartedAt; end = net.uploadCompletedAt
+    case 1: start = net.uploadCompletedAt; end = net.responseStartedAt
+    case 2: start = net.responseStartedAt; end = net.requestCompletedAt
+    case 3: start = net.requestStartedAt; end = net.requestCompletedAt
+    case 4: start = net.requestStartedAt; end = net.uploadStartedAt
+    default: return -1
+    }
+    guard let start = start, let end = end, end >= start else { return -1 }
+    return Int64((end - start) / 1_000_000)
 }
 @_cdecl("dh_net_close")
 public func netClose(_ pointer: UnsafeMutableRawPointer) { network(pointer).close() }
@@ -394,12 +432,15 @@ private final class Shell: NSObject, NSApplicationDelegate {
         batchItem?.state = config["offline_mode"] as? Bool == true ? .on : .off
         return true
     }
+    func appendLog(_ message: String) {
+        if logs.last != message { logs.append(message) }
+        if logs.count > 100 { logs.removeFirst() }
+    }
     func status(_ message: String, _ active: Bool) {
         busy = active
         statusItem?.title = message
         item?.button?.toolTip = "Dictation Hotkey: \(message)"
-        if logs.last != message { logs.append(message) }
-        if logs.count > 100 { logs.removeFirst() }
+        appendLog(message)
         if active {
             if overlay == nil {
                 let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 72),
@@ -425,7 +466,7 @@ private final class Shell: NSObject, NSApplicationDelegate {
         } else { overlay?.orderOut(nil) }
     }
     func error(_ message: String) {
-        logs.append(message); if logs.count > 100 { logs.removeFirst() }
+        appendLog(message)
         let alert = NSAlert(); alert.messageText = "Dictation Hotkey"; alert.informativeText = message
         NSApp.activate(ignoringOtherApps: true); alert.runModal()
     }
@@ -461,9 +502,8 @@ private final class Shell: NSObject, NSApplicationDelegate {
         insertionItem?.title = allowed ? "Text Insertion Enabled" : "Enable Text Insertion…"
         guard insertionAllowed != allowed else { return }
         insertionAllowed = allowed
-        logs.append(allowed ? "Text insertion permission verified for the running app" :
+        appendLog(allowed ? "Text insertion permission verified for the running app" :
             "Text insertion permission missing for the running app. Enable it in Accessibility; after a local rebuild, remove the old entry and add the current app again, then quit and reopen it.")
-        if logs.count > 100 { logs.removeFirst() }
     }
     @objc func showLogs() {
         dialog = true; defer { dialog = false }
@@ -528,7 +568,15 @@ public func uiStatus(_ text: UnsafePointer<CChar>, _ busy: Int32) {
     shell?.status(String(cString: text), busy != 0)
 }
 @_cdecl("dh_ui_error")
-public func uiError(_ text: UnsafePointer<CChar>) { shell?.error(String(cString: text)) }
+public func uiError(_ text: UnsafePointer<CChar>) {
+    let message = String(cString: text)
+    DispatchQueue.main.async { shell?.error(message) }
+}
+@_cdecl("dh_ui_log")
+public func uiLog(_ text: UnsafePointer<CChar>) {
+    let message = String(cString: text)
+    DispatchQueue.main.async { shell?.appendLog(message) }
+}
 @_cdecl("dh_ui_config")
 public func uiConfig(_ config: UnsafePointer<CChar>) -> Int32 {
     guard let next = (try? JSONSerialization.jsonObject(with: Data(String(cString: config).utf8))) as? [String: Any] else { return 0 }

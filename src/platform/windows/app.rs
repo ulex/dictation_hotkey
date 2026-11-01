@@ -405,7 +405,7 @@ impl App {
     fn stop(&mut self) {
         if self.core.stop() {
             if let Some(control) = &self.control {
-                control.stop.store(true, Ordering::Release);
+                control.request_stop();
             }
             if ACTIVE.swap(false, Ordering::AcqRel) {
                 sound(false);

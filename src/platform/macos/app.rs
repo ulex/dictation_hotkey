@@ -65,9 +65,7 @@ impl App {
     fn toggle(&mut self, clipboard: bool) -> io::Result<()> {
         if self.core.stop() {
             if let Some(control) = &self.control {
-                control
-                    .stop
-                    .store(true, std::sync::atomic::Ordering::Release);
+                control.request_stop();
             }
             status("Processing…", true);
             return Ok(());
@@ -262,9 +260,7 @@ impl App {
             2 => {
                 if self.core.stop() {
                     if let Some(control) = &self.control {
-                        control
-                            .stop
-                            .store(true, std::sync::atomic::Ordering::Release);
+                        control.request_stop();
                     }
                     status("Processing…", true);
                 }

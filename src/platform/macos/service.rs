@@ -1,5 +1,6 @@
 //! Disk-streamed multipart upload through URLSession. No recording-sized RAM buffer.
 use crate::{
+    diagnostics::{BatchPhase, BatchTimingLog},
     macos_bridge as ffi,
     spool::random_name,
     wire::{self, Multipart},
@@ -89,13 +90,18 @@ pub fn batch(
     model: &str,
     api_key: &str,
     cancelled: Arc<AtomicBool>,
+    measure_timings: bool,
 ) -> io::Result<String> {
+    let mut timing = BatchTimingLog::new(measure_timings);
     if api_key.is_empty() || api_key.chars().any(char::is_control) {
         return Err(io::Error::other("invalid API key"));
     }
+    let staging_started = Instant::now();
     let boundary = format!("dh-{}", random_name()?);
     let mut source = File::open(wav)?;
-    let multipart = Multipart::new(&boundary, model, source.metadata()?.len())?;
+    let wav_bytes = source.metadata()?.len();
+    let multipart = Multipart::new(&boundary, model, wav_bytes)?;
+    timing.set_audio_bytes(wav_bytes);
     let path = wav.with_file_name(format!("dh-{}.upload", random_name()?));
     use std::os::unix::fs::OpenOptionsExt;
     let mut destination = OpenOptions::new()
@@ -120,6 +126,8 @@ pub fn batch(
     }
     destination.write_all(multipart.suffix.as_bytes())?;
     drop(destination);
+    timing.record(BatchPhase::MultipartStage, staging_started.elapsed());
+    let setup_started = Instant::now();
     let path = ffi::string(
         upload
             .0
@@ -130,14 +138,34 @@ pub fn batch(
     let key = ffi::string(api_key)?;
     let handle =
         Handle::new(unsafe { ffi::dh_http_new(path.as_ptr(), boundary.as_ptr(), key.as_ptr()) })?;
+    timing.record(BatchPhase::Setup, setup_started.elapsed());
     let _watch = handle.watch(cancelled, Duration::from_secs(180))?;
     let mut response = vec![0; crate::session::MAX_TRANSCRIPT_BYTES + 65536];
+    let network_wait_started = Instant::now();
     let count =
         unsafe { ffi::dh_http_receive(handle.raw(), response.as_mut_ptr(), response.len()) };
+    timing.record(BatchPhase::NetworkTotal, network_wait_started.elapsed());
+    for (native_phase, phase) in [
+        (0, BatchPhase::Upload),
+        (1, BatchPhase::ServerWait),
+        (2, BatchPhase::ResponseBody),
+        (3, BatchPhase::NetworkTotal),
+        (4, BatchPhase::Connection),
+    ] {
+        let milliseconds = unsafe { ffi::dh_http_timing(handle.raw(), native_phase) };
+        if let Ok(milliseconds) = u64::try_from(milliseconds) {
+            timing.record(phase, Duration::from_millis(milliseconds));
+        }
+    }
     if count < 0 {
         return Err(io::Error::other(
             "batch request failed (check API key, quota, model and connection)",
         ));
     }
-    wire::batch_text(&response[..count as usize])
+    let parse_started = Instant::now();
+    let result = wire::batch_text(&response[..count as usize]);
+    timing.record(BatchPhase::ResponseParse, parse_started.elapsed());
+    let text = result?;
+    timing.mark_succeeded();
+    Ok(text)
 }
