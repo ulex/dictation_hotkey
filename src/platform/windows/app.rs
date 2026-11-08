@@ -318,7 +318,17 @@ impl App {
         self.pending_copy = None;
         self.busy_since = None;
         self.core.fail(self.core.ticket, "output failed");
-        let copied = !self.core.text.is_empty() && output::copy(self.hwnd, &self.core.text).is_ok();
+        let copied = if self.core.text.is_empty() {
+            false
+        } else {
+            match output::copy(self.hwnd, &self.core.text) {
+                Ok(()) => true,
+                Err(error) => {
+                    logs_ui::log(&format!("Recovery clipboard copy failed: {error}"));
+                    false
+                }
+            }
+        };
         if !self.core.text.is_empty() {
             self.core.last_text.clone_from(&self.core.text);
         }
@@ -338,6 +348,22 @@ impl App {
             true,
         );
         self.timer();
+    }
+    fn output_error(&mut self, error: &io::Error, timed_out: bool) {
+        // Log before fail_output clears pending state and overwrites the clipboard
+        // with the recovery transcript. Do not include any transcript content.
+        let cfg = self.frozen.as_ref().unwrap_or(&self.config);
+        logs_ui::log(&format!(
+            "Output failure diagnostics: operation: {}; mode: {}; shortcut: {}; pending UTF-8 bytes: {}; timed out: {timed_out}; error kind: {:?}; cause: {error}; {}",
+            if self.pending.is_empty() { "clipboard copy" } else { "text insertion" },
+            cfg.string("typing_mode"), cfg.string("paste_shortcut"), self.pending.len(),
+            error.kind(), output::failure_context(),
+        ));
+        self.fail_output(if timed_out {
+            "Output stayed busy; see Logs for details; Copy Last Text to recover"
+        } else {
+            "Output failed; see Logs for details; Copy Last Text to recover"
+        });
     }
     fn begin(&mut self, clipboard_only: bool) {
         if self.quitting || DIALOG.load(Ordering::Relaxed) {
@@ -571,14 +597,10 @@ impl App {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     let started = *self.busy_since.get_or_insert(now);
                     if started.elapsed() >= Duration::from_secs(2) {
-                        self.fail_output(
-                            "Clipboard or modifiers stayed busy; Copy Last Text to recover",
-                        );
+                        self.output_error(&e, true);
                     }
                 }
-                Err(_) => self.fail_output(
-                    "Input failed (possibly an elevated target/UIPI); Copy Last Text to recover",
-                ),
+                Err(e) => self.output_error(&e, false),
             }
         }
         if self.terminal.is_some()
@@ -831,7 +853,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
                 Ok(clipboard::RestoreOutcome::Idle) => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(_) => logs_ui::log("Clipboard restoration failed; retrying"),
+                Err(error) => {
+                    logs_ui::log(&format!("Clipboard restoration failed; retrying: {error}"))
+                }
             }
             0
         }

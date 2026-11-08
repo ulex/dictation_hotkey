@@ -23,14 +23,22 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FORMATS: usize = 256;
 const UNICODE_TEXT: u32 = 13;
 
+fn api_error(operation: &str, format: Option<u32>) -> io::Error {
+    // Capture before closing the clipboard or freeing temporary handles can
+    // overwrite last-error. IDs are safe to log; format names/data may be private.
+    let code = unsafe { GetLastError() };
+    io::Error::other(format!(
+        "clipboard {operation} failed (format ID: {format:?}; Win32 error: {code})"
+    ))
+}
+
 struct Open;
 impl Open {
     fn new(hwnd: HWND) -> io::Result<Self> {
+        unsafe { SetLastError(0) };
         if unsafe { OpenClipboard(hwnd) } == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "clipboard is in use",
-            ));
+            let error = api_error("OpenClipboard", None);
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, error));
         }
         Ok(Self)
     }
@@ -116,31 +124,38 @@ unsafe fn snapshot() -> io::Result<Vec<Format>> {
         id = EnumClipboardFormats(id);
         if id == 0 {
             if GetLastError() != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(api_error("EnumClipboardFormats", None));
             }
             return Ok(formats);
         }
         if formats.len() == MAX_FORMATS || (0x200..=0x3ff).contains(&id) {
-            return Err(io::Error::other(
-                "clipboard cannot be safely preserved; use keystroke output",
-            ));
+            return Err(io::Error::other(format!(
+                "clipboard cannot be safely preserved (format ID: {id}; saved formats: {}); use keystroke output",
+                formats.len(),
+            )));
         }
+        SetLastError(0);
         let data = GetClipboardData(id);
         if data.is_null() {
-            return Err(io::Error::other("cannot read original clipboard format"));
+            return Err(api_error(
+                "GetClipboardData while preserving original",
+                Some(id),
+            ));
         }
         let size = if matches!(id, 2 | 0x82) {
             let mut bitmap: BITMAP = std::mem::zeroed();
+            SetLastError(0);
             if GetObjectW(data, size_of::<BITMAP>() as i32, &mut bitmap as *mut _ as _) == 0 {
-                return Err(io::Error::last_os_error());
+                return Err(api_error("GetObjectW", Some(id)));
             }
             (bitmap.bmWidthBytes as usize).saturating_mul(bitmap.bmHeight.unsigned_abs() as usize)
         } else if matches!(id, 14 | 0x8e) {
             GetEnhMetaFileBits(data, 0, std::ptr::null_mut()) as usize
         } else if matches!(id, 3 | 0x83) {
+            SetLastError(0);
             let pict = GlobalLock(data) as *const METAFILEPICT;
             if pict.is_null() {
-                return Err(io::Error::last_os_error());
+                return Err(api_error("GlobalLock while preserving original", Some(id)));
             }
             let size = GetMetaFileBitsEx((*pict).hMF, 0, std::ptr::null_mut()) as usize;
             GlobalUnlock(data);
@@ -152,9 +167,9 @@ unsafe fn snapshot() -> io::Result<Vec<Format>> {
         };
         bytes = bytes.saturating_add(size);
         if bytes > MAX_BYTES {
-            return Err(io::Error::other(
-                "clipboard too large to preserve; use keystroke output",
-            ));
+            return Err(io::Error::other(format!(
+                "clipboard too large to preserve ({bytes} bytes; format ID: {id}); use keystroke output",
+            )));
         }
         // Display variants use the same handle types as their normal formats.
         let duplicate_format = match id {
@@ -163,10 +178,12 @@ unsafe fn snapshot() -> io::Result<Vec<Format>> {
             0x8e => 14,
             _ => id,
         };
+        SetLastError(0);
         let duplicate = OleDuplicateData(data, duplicate_format as u16, GMEM_MOVEABLE);
         if duplicate.is_null() {
-            return Err(io::Error::other(
-                "cannot preserve original clipboard format",
+            return Err(api_error(
+                "OleDuplicateData while preserving original",
+                Some(id),
             ));
         }
         formats.push(Format {
@@ -178,21 +195,28 @@ unsafe fn snapshot() -> io::Result<Vec<Format>> {
 
 unsafe fn replace(text: &str) -> io::Result<()> {
     let data: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    SetLastError(0);
     let mut format = Format {
         id: UNICODE_TEXT,
         data: GlobalAlloc(GMEM_MOVEABLE, data.len() * 2),
     };
     if format.data.is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(api_error("GlobalAlloc for text", Some(UNICODE_TEXT)));
     }
+    SetLastError(0);
     let dest = GlobalLock(format.data) as *mut u16;
     if dest.is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(api_error("GlobalLock for text", Some(UNICODE_TEXT)));
     }
     copy_nonoverlapping(data.as_ptr(), dest, data.len());
     GlobalUnlock(format.data);
-    if EmptyClipboard() == 0 || SetClipboardData(UNICODE_TEXT, format.data).is_null() {
-        return Err(io::Error::last_os_error());
+    SetLastError(0);
+    if EmptyClipboard() == 0 {
+        return Err(api_error("EmptyClipboard for text", None));
+    }
+    SetLastError(0);
+    if SetClipboardData(UNICODE_TEXT, format.data).is_null() {
+        return Err(api_error("SetClipboardData for text", Some(UNICODE_TEXT)));
     }
     format.data = std::ptr::null_mut(); // Windows now owns the allocation.
     Ok(())
@@ -227,8 +251,9 @@ pub fn prepare_paste(hwnd: HWND, text: &str) -> io::Result<()> {
     let _open = Open::new(hwnd)?;
     let formats = unsafe { snapshot()? };
     // Install the restore timer before modifying the clipboard.
+    unsafe { SetLastError(0) };
     if unsafe { SetTimer(hwnd, RESTORE_TIMER, 300, None) } == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(api_error("SetTimer for restoration", None));
     }
     let result = unsafe { replace(text) };
     let paste_data = if result.is_ok() {
@@ -273,17 +298,23 @@ pub fn restore(hwnd: HWND) -> io::Result<RestoreOutcome> {
                 ) {
                     outcome = RestoreOutcome::Restored;
                     if !saved.emptied {
+                        SetLastError(0);
                         if EmptyClipboard() == 0 {
-                            return Err(io::Error::last_os_error());
+                            return Err(api_error("EmptyClipboard during restoration", None));
                         }
                         saved.emptied = true;
                     }
                     // Retry failed formats without emptying successful ones on the next tick.
                     for format in &mut saved.formats {
                         if !format.data.is_null() {
+                            SetLastError(0);
                             if SetClipboardData(format.id, format.data).is_null() {
+                                let error = api_error(
+                                    "SetClipboardData during restoration",
+                                    Some(format.id),
+                                );
                                 saved.sequence = GetClipboardSequenceNumber();
-                                return Err(io::Error::last_os_error());
+                                return Err(error);
                             }
                             format.data = std::ptr::null_mut();
                         }
@@ -303,7 +334,19 @@ pub fn restore(hwnd: HWND) -> io::Result<RestoreOutcome> {
 
 #[cfg(test)]
 mod tests {
-    use super::still_ours;
+    use super::{api_error, still_ours, SetLastError};
+
+    #[test]
+    fn diagnostic_preserves_operation_format_and_original_win32_error() {
+        unsafe { SetLastError(5) };
+        let error = api_error("OleDuplicateData while preserving original", Some(49152));
+        unsafe { SetLastError(87) };
+        assert_eq!(
+            error.to_string(),
+            "clipboard OleDuplicateData while preserving original failed (format ID: Some(49152); Win32 error: 5)"
+        );
+    }
+
     #[test]
     fn synthesized_formats_do_not_cancel_restoration() {
         assert!(still_ours(false, true, false, true, true));
