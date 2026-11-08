@@ -28,6 +28,28 @@ fn error(e: windows::core::Error) -> io::Error {
         "microphone: {e} (check device and Windows microphone permissions)"
     ))
 }
+// WASAPI may mark the first packet discontinuous during normal stream startup.
+fn is_discontinuity(first: bool, flags: u32) -> bool {
+    !first && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0
+}
+
+// Copy before ReleaseBuffer; a discontinuity does not invalidate the available PCM.
+// Safety: non-null, non-silent data must point to at least frames * 2 readable bytes.
+unsafe fn copy_packet(data: *const u8, frames: u32, flags: u32) -> io::Result<Vec<u8>> {
+    if frames > SAMPLE_RATE {
+        return Err(io::Error::other("oversized microphone packet"));
+    }
+    if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
+        Ok(vec![0u8; frames as usize * 2])
+    } else if frames == 0 {
+        Ok(Vec::new())
+    } else if data.is_null() {
+        Err(io::Error::other("invalid microphone buffer"))
+    } else {
+        Ok(std::slice::from_raw_parts(data, frames as usize * 2).to_vec())
+    }
+}
+
 pub fn capture(
     stop: &AtomicBool,
     mut on_chunk: impl FnMut(&[u8]) -> io::Result<()>,
@@ -85,6 +107,7 @@ unsafe fn capture_inner(
             let mut first = true;
             let mut last_end = None::<u64>;
             let mut packets = 0u64;
+            let mut discontinuities = 0u64;
             let mut timeouts = 0u64;
             let mut last_packet_at = started;
             let mut max_packet_gap_ms = 0u128;
@@ -120,30 +143,26 @@ unsafe fn capture_inner(
                         max_packet_gap_ms.max(now.duration_since(last_packet_at).as_millis());
                     last_packet_at = now;
                     packets += 1;
-                    let copied = (|| {
-                        if frames > SAMPLE_RATE {
-                            return Err(io::Error::other("oversized microphone packet"));
-                        }
-                        if !first && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
-                            return Err(io::Error::other(format!(
-                                "WASAPI reported lost microphone audio during capture (elapsed: {} ms; stop requested: {}; packet: {frames} frames, flags: 0x{flags:x}; device position: {position}, previous end: {last_end:?}; captured: {} frames; packets: {packets}; buffer: {buffer_frames} frames; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms). Recording incomplete",
-                                started.elapsed().as_millis(), stop.load(Ordering::Acquire), total / 2,
-                            )));
-                        }
-                        if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
-                            Ok(vec![0u8; frames as usize * 2])
-                        } else if frames == 0 {
-                            Ok(Vec::new())
-                        } else if data.is_null() {
-                            Err(io::Error::other("invalid microphone buffer"))
-                        } else {
-                            Ok(std::slice::from_raw_parts(data, frames as usize * 2).to_vec())
-                        }
-                    })();
+                    let copied = copy_packet(data, frames, flags);
+                    // Release even on validation failure, and before potentially slow logging.
                     reader.ReleaseBuffer(frames).map_err(error)?;
+                    let copied = copied?;
+                    if is_discontinuity(first, flags) {
+                        discontinuities += 1;
+                        // Preserve available audio rather than failing the whole session.
+                        // Do not synthesize silence from device positions: driver timestamps
+                        // can jump/reset, especially with audio-engine format conversion.
+                        if discontinuities <= 5 {
+                            logs_ui::log(&format!(
+                                "WASAPI warning: microphone discontinuity #{discontinuities}; continuing with available audio (some speech may be missing; elapsed: {} ms; stop requested: {}; packet: {frames} frames, flags: 0x{flags:x}; device position: {position}, previous end: {last_end:?}; captured: {} frames; packets: {packets}; buffer: {buffer_frames} frames; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms){}",
+                                started.elapsed().as_millis(), stop.load(Ordering::Acquire), total / 2,
+                                if discontinuities == 5 { "; further discontinuity warnings suppressed; total reported at capture stop" } else { "" },
+                            ));
+                        }
+                    }
                     first = false;
                     last_end = position.checked_add(u64::from(frames));
-                    for sample in copied?.as_chunks::<2>().0 {
+                    for sample in copied.as_chunks::<2>().0 {
                         if total == MAX_AUDIO_BYTES {
                             stop.store(true, Ordering::Release);
                             break;
@@ -169,7 +188,7 @@ unsafe fn capture_inner(
                 output(&pending)?;
             }
             logs_ui::log(&format!(
-                "WASAPI capture stopped (elapsed: {} ms; captured: {} frames; packets: {packets}; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms)",
+                "WASAPI capture stopped (elapsed: {} ms; captured: {} frames; packets: {packets}; discontinuities: {discontinuities}; event timeouts: {timeouts}; max packet interval: {max_packet_gap_ms} ms)",
                 started.elapsed().as_millis(), total / 2,
             ));
             Ok(())
@@ -181,4 +200,63 @@ unsafe fn capture_inner(
     })();
     let _ = CloseHandle(event);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discontinuous_packet_preserves_pcm_and_allows_following_packets() {
+        let pcm = [0x12, 0x34, 0x56, 0x78];
+        let discontinuity = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+        let mut captured = Vec::new();
+        for flags in [0, discontinuity, discontinuity, 0] {
+            captured.extend(unsafe { copy_packet(pcm.as_ptr(), 2, flags) }.unwrap());
+        }
+        assert_eq!(captured, pcm.repeat(4));
+    }
+
+    #[test]
+    fn discontinuous_silent_packet_produces_silence_without_reading_data() {
+        let flags =
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 | AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
+        let copied = unsafe { copy_packet(std::ptr::null(), 160, flags) }.unwrap();
+        assert_eq!(copied, vec![0; 320]);
+    }
+
+    #[test]
+    fn discontinuity_does_not_hide_invalid_packets() {
+        let flags = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+        assert!(unsafe { copy_packet(std::ptr::null(), 160, flags) }.is_err());
+        assert!(unsafe {
+            copy_packet(
+                std::ptr::null(),
+                SAMPLE_RATE + 1,
+                flags | AUDCLNT_BUFFERFLAGS_SILENT.0 as u32,
+            )
+        }
+        .is_err());
+        assert!(unsafe { copy_packet(std::ptr::null(), 0, flags) }
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn startup_discontinuity_is_not_a_dropout() {
+        assert!(!is_discontinuity(
+            true,
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32
+        ));
+    }
+
+    #[test]
+    fn subsequent_discontinuity_is_detected_even_with_silence() {
+        let discontinuity = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+        let silent = AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
+        assert!(is_discontinuity(false, discontinuity));
+        assert!(is_discontinuity(false, discontinuity | silent));
+        assert!(!is_discontinuity(false, silent));
+        assert!(!is_discontinuity(false, 0));
+    }
 }
